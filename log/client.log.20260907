@@ -1,0 +1,36 @@
+[2026-09-07 15:31:08.885705800 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 15:31:08.971862400 +08:00 INFO] this account require 2fa
+[2026-09-07 15:31:09.221526200 +08:00 INFO] [future_option_mapping]: 156.8966ms
+[2026-09-07 15:31:09.324846300 +08:00 INFO] [future_option_mapping]: 100.8044ms
+[2026-09-07 15:31:09.539743200 +08:00 INFO] [future_option_mapping]: 214.5955ms
+[2026-09-07 15:31:09.631958600 +08:00 INFO] [future_option_mapping]: 81.7517ms
+[2026-09-07 15:35:17.255504400 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 15:35:17.331237400 +08:00 INFO] this account require 2fa
+[2026-09-07 15:35:17.564836100 +08:00 INFO] [future_option_mapping]: 172.1869ms
+[2026-09-07 15:35:17.639077300 +08:00 INFO] [future_option_mapping]: 71.8945ms
+[2026-09-07 15:35:17.910932100 +08:00 INFO] [future_option_mapping]: 271.5895ms
+[2026-09-07 15:35:17.992688400 +08:00 INFO] [future_option_mapping]: 71.2458ms
+[2026-09-07 15:57:10.544467400 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 15:57:10.598788500 +08:00 INFO] this account require 2fa
+[2026-09-07 15:57:10.862599200 +08:00 INFO] [future_option_mapping]: 217.8735ms
+[2026-09-07 15:57:10.920101500 +08:00 INFO] [future_option_mapping]: 55.5817ms
+[2026-09-07 15:57:11.130268900 +08:00 INFO] [future_option_mapping]: 209.7844ms
+[2026-09-07 15:57:11.227490300 +08:00 INFO] [future_option_mapping]: 86.0925ms
+[2026-09-07 19:02:45.928777900 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 19:02:45.980952900 +08:00 INFO] this account require 2fa
+[2026-09-07 19:02:46.020472800 +08:00 INFO] [future_option_mapping]: 25.2391ms
+[2026-09-07 19:02:46.033037100 +08:00 INFO] [future_option_mapping]: 10.6447ms
+[2026-09-07 19:02:46.083488100 +08:00 INFO] [future_option_mapping]: 49.9119ms
+[2026-09-07 19:02:46.105032700 +08:00 INFO] [future_option_mapping]: 11.9809ms
+[2026-09-07 19:35:19.552268700 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 19:35:19.586707900 +08:00 INFO] this account require 2fa
+[2026-09-07 19:35:19.645134900 +08:00 INFO] [future_option_mapping]: 34.8877ms
+[2026-09-07 19:35:19.672037100 +08:00 INFO] [future_option_mapping]: 23.5891ms
+[2026-09-07 19:35:19.732514 +08:00 INFO] [future_option_mapping]: 60.0272ms
+[2026-09-07 19:35:19.758256800 +08:00 INFO] [future_option_mapping]: 15.5352ms
+[2026-09-07 20:27:36.011721800 +08:00 INFO] [login] personal_id="S124176436"
+[2026-09-07 20:27:36.039369700 +08:00 INFO] this account require 2fa
+[2026-09-07 20:27:36.088134900 +08:00 INFO] [future_option_mapping]: 32.7443ms
+[2026-09-07 20:27:36.101897300 +08:00 INFO] [future_option_mapping]: 11.7643ms
+[2026-09-07 20:27:36.174308500 +08:00 INFO] [future_option_mapping]: 72.1414ms
+[2026-09-07 20:27:36.211372900 +08:00 INFO] [future_option_mapping]: 25.6845ms

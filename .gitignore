@@ -1,0 +1,18 @@
+# 環境變數（含富邦憑證，絕對不能進版控）
+.env
+web/.env
+web/.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 前端
+web/node_modules/
+web/dist/
+
+# 執行期產生
+runtime_settings.json
+backups/

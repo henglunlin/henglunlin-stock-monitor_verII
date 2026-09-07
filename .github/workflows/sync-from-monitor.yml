@@ -1,0 +1,76 @@
+name: 從 monitor repo 同步訊號模組與資料檔
+
+# ⚠️ 這支 workflow 存在的理由
+# ============================
+# 新 repo 與舊的 henglunlin-stock-monitor-FUBAN 是兩個獨立的 repo，但
+# signal_module/ 與幾個資料檔必須保持一致——否則就會回到你在
+# pages/2_🎯_目標價編輯.py 註解裡抱怨過的「兩份各自維護、公式改到不一致」。
+#
+# 解法是**單向同步**：舊 repo 是唯一的真實來源（你只會在那邊的「訊號編輯」
+# 頁改訊號），這裡每天拉一次覆蓋過來。單向所以不會有衝突。
+#
+# 如果你哪天改成在新 repo 編訊號，記得把方向反過來，或乾脆停掉這支 workflow——
+# 雙向同步一定會出事。
+
+on:
+  schedule:
+    # 每天台灣時間 08:00（UTC 00:00），開盤前把最新的訊號與資料拉過來
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:        # 也可以手動觸發
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出本 repo
+        uses: actions/checkout@v4
+
+      - name: 取出 monitor repo（來源）
+        uses: actions/checkout@v4
+        with:
+          repository: henglunlin/henglunlin-stock-monitor-FUBAN
+          path: .source
+          # 公開 repo 不需要 token；若之後轉為私有，這裡加：
+          # token: ${{ secrets.SOURCE_REPO_TOKEN }}
+
+      - name: 同步訊號模組與資料檔
+        run: |
+          set -euo pipefail
+
+          # 訊號模組：整個資料夾覆蓋（--delete 讓來源刪掉的檔案這邊也跟著刪）
+          rsync -a --delete .source/signal_module/ signal_module/
+
+          # 資料檔：逐一覆蓋。twse_ohlcv.db 有 38MB，但 rsync 只在內容不同時才寫入，
+          # 所以沒變動的日子不會產生 commit。
+          for f in \
+            TWstocklistname2.txt \
+            stock_groups.json \
+            target_price_list.json \
+            trendline_levels.json \
+            twse_ohlcv.db \
+            fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+          do
+            if [ -f ".source/$f" ]; then
+              rsync -a ".source/$f" "$f"
+            else
+              echo "來源沒有 $f，跳過"
+            fi
+          done
+
+          rm -rf .source
+
+      - name: 有變動才 commit
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "沒有變動，不產生 commit"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore: 從 monitor repo 同步 signal_module 與資料檔"
+          git push

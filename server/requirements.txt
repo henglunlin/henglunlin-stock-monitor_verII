@@ -1,0 +1,27 @@
+# 跨平台依賴。本機開發（Windows / Mac / Linux）都用這一份。
+#
+#     pip install -r server/requirements.txt
+#
+# ⚠️ 這份刻意「不含」富邦 SDK
+# ==========================
+# 富邦的 whl 是分平台的：
+#     fubon_neo-2.2.8-cp37-abi3-win_amd64.whl                ← Windows 本機
+#     fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64...whl  ← Linux（Render）
+#
+# pip 在評估環境標記「之前」就會先去找檔案，所以沒辦法用
+# 「; sys_platform == 'linux'」把兩個平台寫在同一份裡。因此拆成兩份：
+#
+#     Windows 本機： pip install .\fubon_neo-2.2.8-cp37-abi3-win_amd64.whl
+#     Render 部署：  pip install -r server/requirements-render.txt
+#
+# 也刻意不含 streamlit / plotly / streamlit-autorefresh——那些只有舊版
+# Streamlit UI 需要。少裝這些對 Render 免費方案的 512MB 記憶體與
+# 冷啟動時間都有明顯幫助。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pandas
+yfinance
+requests
+urllib3
+openpyxl

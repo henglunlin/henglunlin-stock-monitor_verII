@@ -1,0 +1,29 @@
+# Render 部署設定（Blueprint）。也可以在 Render 網頁上手動建立 Web Service，
+# 設定內容跟這份一樣。
+services:
+  - type: web
+    name: stock-monitor-api
+    runtime: python
+    plan: free                    # 750 instance hours/月；台股每月只用掉約 90 小時
+    region: singapore             # ⚠️ 一定要選新加坡：離台灣最近，比美國機房少約 200ms
+    buildCommand: pip install -r server/requirements.txt
+    startCommand: uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      # --- 以下請在 Render 網頁的 Environment 分頁手動填入，不要寫進這個檔案 ---
+      - key: FUBON_PFX_BASE64     # 憑證（唯一放上雲的敏感資料）
+        sync: false
+      - key: APP_SHARED_TOKEN     # 前端存取用的共享 token
+        sync: false
+      - key: ALLOWED_ORIGINS      # 例如 https://xxx.vercel.app,http://localhost:5173
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+    # 身分證／密碼／憑證密碼刻意「不放」環境變數——依決定改由前端
+    # 呼叫 /api/fubon/login 手動輸入，一天一次。
