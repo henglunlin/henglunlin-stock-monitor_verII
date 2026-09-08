@@ -8,8 +8,8 @@
  *     CORSMiddleware 放行 Vercel 的網域。
  */
 import type {
-  DetectorDebug, FubonDebug, IntradaySeries, MarketEvent, Row, Settings, Status,
-  SymbolHit, TaiexSnapshot, WsDebug,
+  DetectorDebug, FubonDebug, GithubDebug, IntradaySeries, MarketEvent, Row, Settings,
+  Status, SymbolHit, TaiexSnapshot, WsDebug,
 } from '../types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
@@ -85,6 +85,7 @@ export const api = {
   wsDebug: () => request<WsDebug>('/api/debug/ws'),
   detectorDebug: () => request<DetectorDebug>('/api/debug/detector'),
   fubonDebug: () => request<FubonDebug>('/api/debug/fubon'),
+  githubDebug: () => request<GithubDebug>('/api/debug/github'),
 
   events: (limit = 200) =>
     request<{ events: MarketEvent[]; counts: Record<string, number> }>(`/api/events?limit=${limit}`),

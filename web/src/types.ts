@@ -80,6 +80,23 @@ export interface FubonStatus {
   last_reconnect_error: string | null
 }
 
+/**
+ * /api/debug/github 的回應。
+ * **刻意不含 token 本身**，只有長度與前四碼 —— 足夠判斷「有沒有貼錯／多引號」，
+ * 又不會在畫面或截圖上洩漏出去。
+ */
+export interface GithubDebug {
+  token_present: boolean
+  token_len: number
+  token_prefix: string
+  token_looks_quoted: boolean
+  token_valid?: boolean
+  owner?: string
+  repo?: string
+  branch?: string
+  verdict?: string
+}
+
 /** /api/debug/fubon 的一筆連線事件 */
 export interface ConnLogEntry {
   time: string

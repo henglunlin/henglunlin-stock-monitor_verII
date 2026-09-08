@@ -61,6 +61,8 @@ export function GroupEditor({ open, onClose }: { open: boolean; onClose: () => v
   const [hits, setHits] = useState<SymbolHit[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  // GitHub 同步診斷的結果文字（按下錯誤訊息旁的診斷鈕才會有）
+  const [diag, setDiag] = useState<string>('')
   const searchRef = useRef<HTMLInputElement>(null)
 
   // 代碼 → 名稱。先用 rows 裡現成的，查不到再靠搜尋結果補。
@@ -282,6 +284,39 @@ export function GroupEditor({ open, onClose }: { open: boolean; onClose: () => v
           }`}
         >
           {msg.text}
+          {/*
+            同步失敗時直接把診斷按在錯誤旁邊。
+
+            「請確認 GITHUB_TOKEN / OWNER / REPO」這種訊息等於沒說 —— token 失效、
+            權限不足、repo 名稱打錯、分支不存在，四種原因的處理方式完全不同，
+            但長得一模一樣。這顆按鈕會實際去問 GitHub，回報到底是哪一種。
+            **不會顯示 token 本身**，只有長度與前四碼，足夠判斷有沒有貼錯。
+          */}
+          {msg.kind === 'err' && msg.text.includes('GitHub') && (
+            <div className="mt-2">
+              <button
+                onClick={async () => {
+                  setDiag('診斷中…')
+                  try {
+                    const d = await api.githubDebug()
+                    setDiag(
+                      `${d.verdict ?? '（無結論）'}　`
+                      + (d.token_present
+                        ? `token 長度 ${d.token_len}、開頭 ${d.token_prefix}`
+                        : 'token 未設定')
+                      + `　目標 ${d.owner ?? '?'}/${d.repo ?? '?'}@${d.branch ?? '?'}`,
+                    )
+                  } catch (e) {
+                    setDiag(e instanceof Error ? e.message : String(e))
+                  }
+                }}
+                className="rounded border border-rose-800 px-2 py-0.5 text-[11px] text-rose-200 hover:bg-rose-900/40"
+              >
+                🔍 診斷同步失敗的原因
+              </button>
+              {diag && <div className="mt-1.5 leading-relaxed text-[11px] text-zinc-300">{diag}</div>}
+            </div>
+          )}
         </div>
       )}
 
