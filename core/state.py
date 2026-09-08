@@ -119,6 +119,15 @@ class Settings:
     # 誤報反彈。拉抬與漲停沒有這個問題（它們不依賴今日最低），所以不靜音。設 0 可關閉。
     rebound_open_silence_min: int = 5
 
+    # ── 富邦連線看門狗 ──
+    # 雲端跨海連線會不定時抖動，而且最難查的是「半開連線」——TCP 沒正常關閉，
+    # 斷線回呼不會觸發，狀態顯示已連線但資料停了。所以要同時看「斷線」與「沒資料」。
+    fubon_watchdog_enabled: bool = True
+    # 超過這麼久沒收到任何一檔的訊息，就視為連線已死。
+    # 盤中 197 檔訂閱下，正常情況每秒都有訊息，120 秒是很保守的門檻。
+    fubon_stale_sec: int = 120
+    fubon_watchdog_interval_sec: int = 15
+
     # 🔺 即將漲停 / 跌停：漲跌幅達到這個值就預警（真正的漲停價另外用升降單位算）
     limit_approach_pct: float = 7.5
     limit_cooldown_sec: int = 1800         # 30 分鐘，沿用原版
@@ -451,6 +460,14 @@ class AppState:
                     "last_message_at": last_msg.isoformat(timespec="seconds")
                     if isinstance(last_msg, datetime) else None,
                     "error": manager_status.get("error") or self.fubon_last_error,
+                    # 連線健康度：讓「今天到底斷過幾次」看得見，而不是只能猜
+                    "disconnect_count": manager_status.get("disconnect_count", 0),
+                    "reconnect_count": manager_status.get("reconnect_count", 0),
+                    "last_reconnect_at": (
+                        manager_status["last_reconnect_at"].isoformat(timespec="seconds")
+                        if isinstance(manager_status.get("last_reconnect_at"), datetime) else None
+                    ),
+                    "last_reconnect_error": manager_status.get("last_reconnect_error"),
                 },
                 "groups": {name: len(v) for name, v in self.stock_groups.items()},
                 "tick_count": manager_status.get("tick_count", 0),

@@ -131,6 +131,7 @@ class QuoteHub:
             asyncio.create_task(self._quote_loop(), name="quote_loop"),
             asyncio.create_task(self._row_loop(), name="row_loop"),
             asyncio.create_task(self._detector_loop(), name="detector_loop"),
+            asyncio.create_task(self._fubon_watchdog(), name="fubon_watchdog"),
             asyncio.create_task(self._telegram_loop(), name="telegram_loop"),
         ]
 
@@ -298,6 +299,100 @@ class QuoteHub:
             except Exception as e:
                 log.exception("row_loop 發生例外，10 秒後續跑：%s", e)
                 await asyncio.sleep(10)
+
+    # ------------------------------------------------------------------
+    # 富邦連線看門狗
+    # ------------------------------------------------------------------
+    async def _fubon_watchdog(self) -> None:
+        """
+        盤中每 15 秒檢查一次富邦連線，斷了就自動重連並重新訂閱。
+
+        ⚠️ 為什麼一定要有這個
+        --------------------
+        原本 `_on_disconnect()` 只寫一行 log 就結束，**沒有任何重連**。
+        本機不太會遇到（路徑短又穩，而且人就坐在旁邊看得到）；但 Render 在新加坡、
+        富邦在台灣，跨海連線抖動的機率高很多，加上免費方案的執行個體本來就會被
+        平台搬移重啟。只要抖一次，行情就永久停掉直到手動重新登入——
+        這就是「雲端會不定時斷線、本機不會」的真正原因。
+
+        兩種斷法都要抓：
+          1. **明確斷線** —— connected == False，斷線回呼有觸發
+          2. **半開連線** —— TCP 沒正常關閉，回呼不會觸發，狀態一直顯示「已連線」，
+             但 tick 就是不再增加。這種最難查，只能靠「多久沒收到資料」判斷。
+
+        ── 重連不需要帳密 ──
+        SDK 的登入 session 還活著（self.sdk 沒有失效），只是行情 WebSocket 掉了。
+        所以重連只做 init_realtime() + connect() + 重新訂閱，**不需要重新登入**，
+        也就不需要把身分證與密碼存在伺服器上——這跟原本的安全決定沒有衝突。
+
+        ── 只在盤中運作 ──
+        收盤後沒有資料是正常的，不該一直重連。08:45（試撮）到 13:35 之外直接跳過。
+        """
+        # 指數退避：連續失敗時拉長間隔，避免對富邦造成連線風暴
+        BACKOFF = [0, 15, 30, 60, 120]
+        fails = 0
+        await asyncio.sleep(20)          # 等服務完全起來再開始看
+
+        while self._running:
+            try:
+                state = get_state()
+                s = state.settings
+                interval = max(5, int(s.fubon_watchdog_interval_sec))
+
+                if not s.fubon_watchdog_enabled or not state.fubon_logged_in:
+                    fails = 0
+                    await asyncio.sleep(interval)
+                    continue
+
+                now = datetime.now(TW_TZ)
+                minutes = now.hour * 60 + now.minute
+                # 08:45 試撮 ~ 13:35 收盤後五分鐘
+                if not (8 * 60 + 45 <= minutes <= 13 * 60 + 35) or now.weekday() >= 5:
+                    fails = 0
+                    await asyncio.sleep(interval)
+                    continue
+
+                mgr = state.fubon_manager
+                if mgr is None or mgr.sdk is None:
+                    await asyncio.sleep(interval)
+                    continue
+
+                status = mgr.get_status()
+                stale_sec = max(30, int(s.fubon_stale_sec))
+                dead = (not status.get("connected")) or mgr.is_stale(stale_sec)
+
+                if not dead:
+                    fails = 0
+                    await asyncio.sleep(interval)
+                    continue
+
+                gap = mgr.seconds_since_last_message()
+                log.warning(
+                    "看門狗偵測到富邦連線異常（connected=%s、距上次資料 %s 秒），開始重連",
+                    status.get("connected"),
+                    f"{gap:.0f}" if gap is not None else "從未收到",
+                )
+                wait = BACKOFF[min(fails, len(BACKOFF) - 1)]
+                if wait:
+                    await asyncio.sleep(wait)
+
+                symbols = self.all_symbols()
+                ok = await self._loop.run_in_executor(
+                    None, mgr.reconnect_and_resubscribe, symbols,
+                )
+                if ok:
+                    fails = 0
+                    log.info("看門狗重連成功，已重新訂閱 %d 檔", len(symbols))
+                else:
+                    fails += 1
+                    log.warning("看門狗重連失敗（連續第 %d 次），將延後再試", fails)
+
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.exception("fubon_watchdog 發生例外，30 秒後續跑：%s", e)
+                await asyncio.sleep(30)
 
     # ------------------------------------------------------------------
     # 偵測線：盤中事件（第三條迴圈）

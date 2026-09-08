@@ -60,6 +60,19 @@ export function StatusBar() {
 
         <span className="text-zinc-500 tabular-nums">最後資料 {ago(fubon?.last_message_at ?? null)}</span>
         <span className="text-zinc-500 tabular-nums">tick {status?.tick_count ?? 0}</span>
+        {/* 斷過線才顯示。平常不佔版面，出事時一眼看得到有沒有自動接回來 */}
+        {!!fubon?.disconnect_count && (
+          <span
+            className="rounded bg-amber-500/15 px-2 py-[2px] tabular-nums text-amber-300"
+            title={
+              fubon.last_reconnect_at
+                ? `最後一次重連 ${fubon.last_reconnect_at.slice(11)}`
+                : '尚未成功重連'
+            }
+          >
+            斷線 {fubon.disconnect_count} 次 · 已自動重連 {fubon.reconnect_count} 次
+          </span>
+        )}
         <span className="text-zinc-600">{status?.trading_date ?? '—'}</span>
 
         {paused && (

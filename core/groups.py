@@ -171,13 +171,38 @@ def fetch_groups_from_github() -> dict:
     return validate_and_normalize_group_json(res.json())
 
 
-def upload_file_to_repo(file_bytes: bytes, github_path: str, commit_message: str, repo_cfg: dict) -> bool:
-    """透過 GitHub Contents API 建立／更新一個檔案。"""
+# HTTP 狀態碼 → 人看得懂的原因。這張表是為了讓錯誤訊息能直接指向該修哪裡，
+# 而不是丟一句「同步失敗，請確認設定」讓人自己猜四種可能。
+_HTTP_HINT = {
+    401: "token 無效或已撤銷（也可能是貼上時多了引號）",
+    403: "token 權限不足（Contents 需要 Read and write），或觸發流量限制",
+    404: "找不到 repo —— 名稱打錯，或 fine-grained token 沒有把這個 repo 加進 Repository access",
+    409: "分支衝突，稍後再試",
+    422: "內容或分支名稱不合法",
+}
+
+
+def upload_file_to_repo(file_bytes: bytes, github_path: str, commit_message: str,
+                        repo_cfg: dict) -> tuple:
+    """
+    透過 GitHub Contents API 建立／更新一個檔案。回傳 (成功?, 失敗原因)。
+
+    ⚠️ 為什麼要回傳原因，不能只回 bool
+    ----------------------------------
+    這支原本是 `return put_res.status_code in (200, 201)` —— **HTTP 狀態碼和
+    GitHub 回的錯誤訊息整個被丟掉**，只有網路層例外才寫 log。結果 401（token 錯）、
+    403（權限不足）、404（repo 名稱錯）全部變成同一句「同步失敗，請確認設定」，
+    使用者只能一個一個猜，而且翻 log 也翻不到東西。
+
+    現在把狀態碼與 GitHub 的訊息一路帶回 UI，一眼就知道該修哪一個。
+    """
     token, owner, repo, branch = (
         repo_cfg["token"], repo_cfg["owner"], repo_cfg["repo"], repo_cfg["branch"]
     )
-    if not token or not owner or not repo:
-        return False
+    missing = [n for n, v in (("GITHUB_TOKEN", token), ("GITHUB_OWNER", owner),
+                              ("GITHUB_REPO", repo)) if not v]
+    if missing:
+        return False, f"環境變數未設定：{'、'.join(missing)}"
 
     github_path = github_path.strip("/")
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{github_path}"
@@ -201,10 +226,23 @@ def upload_file_to_repo(file_bytes: bytes, github_path: str, commit_message: str
             payload["sha"] = sha
 
         put_res = requests.put(url, headers=headers, json=payload, timeout=30)
-        return put_res.status_code in (200, 201)
+        if put_res.status_code in (200, 201):
+            return True, ""
+
+        # 把 GitHub 自己的說明也帶出來——它常常比狀態碼更明確
+        try:
+            gh_msg = put_res.json().get("message", "")
+        except Exception:
+            gh_msg = put_res.text[:120]
+        reason = (f"HTTP {put_res.status_code}"
+                  + (f"：{_HTTP_HINT[put_res.status_code]}" if put_res.status_code in _HTTP_HINT else "")
+                  + (f"（GitHub：{gh_msg}）" if gh_msg else ""))
+        log.warning("推送 %s 到 %s/%s 失敗 → %s", github_path, owner, repo, reason)
+        return False, reason
     except Exception as e:
-        log.warning("推送 %s 到 %s/%s 失敗：%s", github_path, owner, repo, e)
-        return False
+        reason = f"連線失敗：{type(e).__name__}: {e}"
+        log.warning("推送 %s 到 %s/%s 失敗 → %s", github_path, owner, repo, reason)
+        return False, reason
 
 
 def upload_groups_to_github(
@@ -221,13 +259,13 @@ def upload_groups_to_github(
     掃描器那邊失敗只是警告，不擋存檔流程（沿用原版行為）。
     """
     content = json.dumps(groups, ensure_ascii=False, indent=2).encode("utf-8")
-    ok_self = upload_file_to_repo(
+    ok_self, why_self = upload_file_to_repo(
         content, "stock_groups.json", commit_message, config.github_repo_config()
     )
-    ok_scanner = upload_file_to_repo(
+    ok_scanner, _why_scanner = upload_file_to_repo(
         content, "stock_groups.json", commit_message, config.scanner_repo_config()
     )
-    return ok_self, ok_scanner
+    return ok_self, ok_scanner, why_self
 
 
 def persist_groups(groups: dict) -> SyncResult:
@@ -258,7 +296,7 @@ def persist_groups(groups: dict) -> SyncResult:
         return result
 
     result.attempted_push = True
-    ok_self, ok_scanner = upload_groups_to_github(groups)
+    ok_self, ok_scanner, why = upload_groups_to_github(groups)
     result.pushed_self, result.pushed_scanner = ok_self, ok_scanner
 
     if ok_self and ok_scanner:
@@ -269,7 +307,6 @@ def persist_groups(groups: dict) -> SyncResult:
             "但推送到 stock-scanner-FUBAN 失敗（請確認該 repo 的 Token 權限），不影響本機使用。"
         )
     else:
-        result.message = (
-            "同步 GitHub 失敗，請確認環境變數中的 GITHUB_TOKEN / GITHUB_OWNER / GITHUB_REPO 設定。"
-        )
+        # 把真正的原因講出來，不要讓使用者在四種可能之間猜
+        result.message = f"同步 GitHub 失敗 → {why}"
     return result

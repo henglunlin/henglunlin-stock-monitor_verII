@@ -68,6 +68,11 @@ export interface FubonStatus {
   subscribed_count: number
   last_message_at: string | null
   error: string | null
+  /** 今日斷線次數。雲端跨海連線本來就會抖，重點是有沒有自動接回來 */
+  disconnect_count: number
+  reconnect_count: number
+  last_reconnect_at: string | null
+  last_reconnect_error: string | null
 }
 
 export interface Settings {
@@ -110,6 +115,9 @@ export interface Settings {
   entry_early_10s_pct: number
   entry_cooldown_sec: number
   warning_cooldown_sec: number
+  fubon_watchdog_enabled: boolean
+  fubon_stale_sec: number
+  fubon_watchdog_interval_sec: number
 }
 
 /** 盤中事件的種類。數字越大越重要（見 core/events.py 的 PRIORITY） */

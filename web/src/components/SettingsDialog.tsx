@@ -367,6 +367,43 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           <StatusLine label="累計 tick" value={String(status?.tick_count ?? 0)} />
           <StatusLine label="最後訊息" value={fubon?.last_message_at?.slice(11) ?? '—'} />
           <StatusLine label="登入時間" value={fubon?.login_time?.slice(11) ?? '—'} />
+          <StatusLine label="今日斷線" value={`${fubon?.disconnect_count ?? 0} 次`} />
+          <StatusLine
+            label="自動重連"
+            value={
+              `${fubon?.reconnect_count ?? 0} 次` +
+              (fubon?.last_reconnect_at ? `（最後 ${fubon.last_reconnect_at.slice(11)}）` : '')
+            }
+          />
+          {fubon?.last_reconnect_error && (
+            <div className="mt-2 rounded border border-amber-900/50 bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-300">
+              最後一次重連失敗：{fubon.last_reconnect_error}
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-300">
+              <input
+                type="checkbox"
+                checked={s.fubon_watchdog_enabled}
+                onChange={(e) => patch({ fubon_watchdog_enabled: e.target.checked })}
+                className="accent-emerald-500"
+              />
+              啟用連線看門狗
+            </label>
+            <label className="text-xs text-zinc-400">
+              視為斷線的無資料秒數
+              <input
+                type="number" min={30} max={600} step={10}
+                value={s.fubon_stale_sec}
+                onChange={(e) => patch({ fubon_stale_sec: Math.max(30, Number(e.target.value) || 120) })}
+                className="ml-2 w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-right font-mono tabular-nums text-zinc-100"
+              />
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+            看門狗盤中每 {s.fubon_watchdog_interval_sec} 秒檢查一次，斷線或超過上面的秒數沒收到任何資料就自動重連並重新訂閱。
+            <b className="text-zinc-400">重連不需要重新輸入帳密</b>——登入 session 還在，只是重建行情連線。
+          </p>
           {fubon?.error && (
             <div className="mt-2 rounded border border-rose-900/50 bg-rose-950/40 px-2 py-1.5 text-[11px] text-rose-300">
               {fubon.error}

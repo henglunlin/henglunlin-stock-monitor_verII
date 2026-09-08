@@ -90,6 +90,12 @@ class FubonRealtimeManager:
         self._on_tick = on_tick
         # --- 新增：統計，方便在 /api/status 觀察吞吐 ---
         self.tick_count = 0
+        # --- 新增：連線健康度統計，給看門狗與診斷用 ---
+        self.disconnect_count = 0
+        self.reconnect_count = 0
+        self.last_disconnect_at: datetime | None = None
+        self.last_reconnect_at: datetime | None = None
+        self.last_reconnect_error: str | None = None
         # --- 新增：訂閱 id，退訂時要用 ---
         # {code: subscription_id}。id 是訂閱成功時伺服器回的確認訊息帶進來的，
         # 原本的 _on_message 只挑有成交價的訊息、把確認訊息丟掉了，所以拿不到。
@@ -412,7 +418,11 @@ class FubonRealtimeManager:
     def _on_disconnect(self, *_args, **_kwargs):
         with self.lock:
             self.connected = False
-        log.warning("富邦 WebSocket 斷線")
+            self.disconnect_count += 1
+            self.last_disconnect_at = datetime.now(TW_TZ)
+        # 只記錄，實際重連由 hub 的看門狗負責——這個回呼跑在 SDK 的執行緒上，
+        # 在裡面做重連會把 SDK 自己的關閉流程卡住。
+        log.warning("富邦 WebSocket 斷線（今日第 %d 次），看門狗會嘗試重連", self.disconnect_count)
 
     def _on_error(self, *args, **_kwargs):
         detail = args[0] if args else "unknown"
@@ -515,11 +525,16 @@ class FubonRealtimeManager:
                 self.ws = ws
                 self.connected = True
             self.subscribe_many(symbols)
-            log.info("已重連並重新訂閱 %d 檔", len(symbols))
+            with self.lock:
+                self.reconnect_count += 1
+                self.last_reconnect_at = datetime.now(TW_TZ)
+                self.last_reconnect_error = None
+            log.info("已重連並重新訂閱 %d 檔（今日第 %d 次重連）", len(symbols), self.reconnect_count)
             return True
         except Exception as e:
             with self.lock:
                 self.error = f"重連失敗：{e}"
+                self.last_reconnect_error = f"{type(e).__name__}: {e}"
             log.exception("重連並重新訂閱失敗：%s", e)
             return False
 
@@ -555,6 +570,30 @@ class FubonRealtimeManager:
             self._dirty.clear()
             return {k: v for k, v in changed.items() if v is not None}
 
+    def seconds_since_last_message(self) -> float | None:
+        """距離最後一筆訊息幾秒。None 代表從來沒收過。"""
+        with self.lock:
+            last = self.last_message_at
+        if last is None:
+            return None
+        return (datetime.now(TW_TZ) - last).total_seconds()
+
+    def is_stale(self, threshold_sec: float) -> bool:
+        """
+        連線「看起來還在」但資料已經停了。
+
+        ⚠️ 這個判斷不能只看 self.connected
+        --------------------------------
+        最難查的斷線是**半開連線**：TCP 沒有正常關閉，`_on_disconnect` 根本不會
+        觸發，狀態列一直顯示「已連線」，但 tick 就是不再增加。跨海連線（Render 在
+        新加坡、富邦在台灣）特別容易遇到。所以看門狗必須同時看「有沒有斷」與
+        「還有沒有在收資料」，後者才抓得到這一種。
+        """
+        if not self.logged_in or not self.subscribed:
+            return False
+        gap = self.seconds_since_last_message()
+        return gap is None or gap > threshold_sec
+
     def get_status(self) -> dict:
         with self.lock:
             return {
@@ -565,6 +604,11 @@ class FubonRealtimeManager:
                 "last_message_at": self.last_message_at,
                 "tick_count": self.tick_count,
                 "pending_dirty": len(self._dirty),
+                "disconnect_count": self.disconnect_count,
+                "reconnect_count": self.reconnect_count,
+                "last_disconnect_at": self.last_disconnect_at,
+                "last_reconnect_at": self.last_reconnect_at,
+                "last_reconnect_error": self.last_reconnect_error,
             }
 
     # ------------------------------------------------------------------

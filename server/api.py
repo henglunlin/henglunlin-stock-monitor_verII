@@ -92,6 +92,9 @@ class SettingsPatch(BaseModel):
     entry_early_10s_pct: float | None = None
     entry_cooldown_sec: int | None = None
     warning_cooldown_sec: int | None = None
+    fubon_watchdog_enabled: bool | None = None
+    fubon_stale_sec: int | None = None
+    fubon_watchdog_interval_sec: int | None = None
 
 
 # =============================================================================
@@ -537,6 +540,69 @@ async def debug_detector(sample: int = 8):
     diag["rows"] = len(rows)
     diag["detector_interval_ms"] = state.settings.detector_interval_ms
     return json_safe(diag)
+
+
+@router.get("/debug/github", dependencies=auth)
+async def debug_github():
+    """
+    GitHub 同步診斷。不用真的存分組就能知道 token 到底哪裡不對。
+
+    ⚠️ 這支存在的理由跟偵測器診斷一樣：原本失敗訊息把 401 / 403 / 404 講成同一句
+    「請確認設定」，而且失敗完全不寫 log，使用者只能在四種可能之間猜。
+
+    三段檢查，逐段回報：環境變數有沒有 → token 有沒有效 → 這個 repo 推不推得動。
+    **絕對不回傳 token 本身**，只回傳長度與前四碼，足夠判斷「有沒有貼錯／多引號」。
+    """
+    import requests
+
+    cfg = config.github_repo_config()
+    token, owner, repo, branch = cfg["token"], cfg["owner"], cfg["repo"], cfg["branch"]
+
+    out = {
+        "owner": owner, "repo": repo, "branch": branch,
+        "token_present": bool(token),
+        "token_len": len(token) if token else 0,
+        "token_prefix": (token[:4] + "…") if token else "",
+        "token_looks_quoted": bool(token) and (token[0] in "\"'" or token[-1] in "\"'"),
+        "sync_enabled": get_state().settings.sync_groups_to_github,
+    }
+    if not token:
+        out["verdict"] = "❌ 沒有 GITHUB_TOKEN。Render → Settings → Environment Variables 加上去。"
+        return out
+    if out["token_looks_quoted"]:
+        out["verdict"] = "❌ token 前後有引號。Render 的輸入框不需要引號，直接貼值。"
+        return out
+
+    headers = {"Authorization": f"Bearer {token}",
+               "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        u = requests.get("https://api.github.com/user", headers=headers, timeout=15)
+        out["token_valid"] = u.status_code == 200
+        out["as_user"] = u.json().get("login") if u.status_code == 200 else None
+        if u.status_code != 200:
+            out["verdict"] = f"❌ token 無效（HTTP {u.status_code}）。重發一組新的 PAT。"
+            return out
+
+        r = requests.get(f"https://api.github.com/repos/{owner}/{repo}",
+                         headers=headers, timeout=15)
+        out["repo_status"] = r.status_code
+        if r.status_code == 404:
+            out["verdict"] = (f"❌ 找不到 {owner}/{repo}。名稱可能打錯"
+                              "（注意 verII 前面是**底線**不是連字號），"
+                              "或 fine-grained token 沒把這個 repo 加進 Repository access。")
+            return out
+        if r.status_code != 200:
+            out["verdict"] = f"❌ 讀取 repo 失敗（HTTP {r.status_code}）。"
+            return out
+
+        perms = r.json().get("permissions", {})
+        out["can_push"] = bool(perms.get("push"))
+        out["verdict"] = ("✅ 一切正常，分組同步應該會成功。" if out["can_push"] else
+                          "❌ token 對這個 repo 只有讀取權限。Contents 要改成 Read and write。")
+    except Exception as e:
+        out["verdict"] = f"❌ 連線 GitHub 失敗：{type(e).__name__}: {e}"
+    return out
 
 
 @router.get("/debug/cache", dependencies=auth)
