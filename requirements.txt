@@ -1,11 +1,10 @@
-starlette==0.39.2
-streamlit
-yfinance
+fastapi>=0.115
+uvicorn[standard]>=0.30
+fugle-marketdata==2.4.1
 pandas
+yfinance
 requests
 urllib3
-plotly
-streamlit-autorefresh
-fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 openpyxl
-fugle-marketdata==2.4.1
+fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+
