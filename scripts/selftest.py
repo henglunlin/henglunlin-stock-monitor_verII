@@ -15,6 +15,7 @@ import importlib
 import os
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -389,6 +390,113 @@ try:
         warn("web/dist 不存在", "還沒跑 npm run build。開發時走 Vite dev server 就好，不影響。")
 except Exception as e:
     bad(f"FastAPI 應用建立失敗：{e}", "看 traceback")
+    traceback.print_exc()
+
+# =============================================================================
+section("10. 富邦連線韌性（雲端不定時斷線的根因）")
+# =============================================================================
+# 這一節守的是一個很貴的教訓：症狀是「本機穩、放到 Render 就不定時斷線」，
+# 找了兩輪才找到真兇 —— 不在我們的程式裡，在 fugle-marketdata 套件的
+# connect() 裡面。詳見 core/fugle_patch.py 的檔頭。
+try:
+    import resource
+    import threading as _th
+    import time as _time
+
+    from core import fugle_patch
+
+    # --- 10a. 套件原本的 connect() 真的會 100% CPU 空轉嗎 ---
+    try:
+        from fugle_marketdata.websocket.client import WebSocketClient
+
+        def _cpu():
+            r = resource.getrusage(resource.RUSAGE_SELF)
+            return r.ru_utime + r.ru_stime
+
+        fugle_patch.apply(connect_timeout_sec=3)
+        c = WebSocketClient(base_url="ws://127.0.0.1:9/stock/streaming", sdk_token="x")
+        err = {}
+
+        def _run():
+            try:
+                c.connect()
+            except Exception as e:      # noqa: BLE001
+                err["e"] = type(e).__name__
+
+        t0, w0 = _cpu(), _time.time()
+        th = _th.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout=10)
+        burned, wall = _cpu() - t0, _time.time() - w0
+
+        if th.is_alive():
+            bad("修補後 connect() 仍然不會返回",
+                "core/fugle_patch.py 沒套上？檢查 apply() 的回傳值與 log")
+        elif burned > 0.5:
+            bad(f"修補後 connect() 仍在燒 CPU（{wall:.1f} 秒內用掉 {burned:.2f} 秒）",
+                "原版是 100%（3 秒燒 3.01 秒）。0.1 CPU 的 Render 撐不住這個。")
+        else:
+            ok(f"connect() 連不上時會逾時返回（{wall:.1f} 秒，CPU 只用 {burned:.3f} 秒）"
+               f"，拋出 {err.get('e', '?')}")
+    except ImportError:
+        warn("沒裝 fugle-marketdata，跳過 connect() 空轉測試",
+             "正式環境一定會裝，這裡只是本機沒有")
+
+    # --- 10b. 重連失敗不可以把半開偵測弄瞎 ---
+    from datetime import timedelta as _td
+
+    from core.fubon import TW_TZ as _TZ
+    from core.fubon import FubonRealtimeManager as _M
+
+    def _mgr(connected=True, ago=1.0, subs=("2330",)):
+        m = _M()
+        m.logged_in, m.connected = True, connected
+        m.subscribed = set(subs)
+        m.last_message_at = datetime.now(_TZ) - _td(seconds=ago)
+        m.sdk = object()
+        return m
+
+    class _DeadSDK:
+        def init_realtime(self):
+            raise RuntimeError("connection refused")
+
+    m = _mgr(ago=300)
+    m.sdk = _DeadSDK()
+    m.reconnect_and_resubscribe(["2330.TW"])
+    if m.subscribed and m.is_stale(120):
+        ok("重連失敗後仍抓得到半開連線（訂閱狀態沒被提前清掉）")
+    else:
+        bad("重連失敗後半開偵測失效",
+            "reconnect_and_resubscribe 又在連線成功前就清 subscribed 了。"
+            "is_stale() 開頭是 `if not self.subscribed: return False`，一清就瞎。")
+
+    # --- 10c. 連續失敗要收手，不能永遠重試 ---
+    for _ in range(3):
+        m.reconnect_and_resubscribe(["2330.TW"])
+    if m.session_dead:
+        ok(f"連續重連失敗 {m.reconnect_fail_count} 次後判定 session 失效，看門狗會停手")
+    else:
+        bad("連續重連失敗後沒有 session_dead",
+            "0.1 CPU 上無限重連會把行程餓死，而且 session 死掉本來就重連不好")
+
+    # --- 10d. 半開連線的計數要看得見 ---
+    h = _mgr(connected=True, ago=300)
+    if h.is_stale(120) and h.disconnect_count == 0:
+        h.note_stale(300.0)
+        if h.stale_count == 1 and any(e["kind"] == "stale" for e in h.conn_history()):
+            ok("半開連線會記進 stale_count 與連線黑盒子（斷線回呼不會觸發，只能靠這個）")
+        else:
+            bad("半開連線沒被記錄", "檢查 note_stale() 與 conn_log")
+    else:
+        bad("半開連線判定不正確", "檢查 is_stale()")
+
+    # --- 10e. 正常連線不可以被誤判 ---
+    if not _mgr(ago=3).is_stale(120) and not _mgr(ago=999, subs=()).is_stale(120):
+        ok("正常連線與尚未訂閱的狀態都不會被誤判成斷線")
+    else:
+        bad("is_stale 誤判", "會造成盤中無謂重連，反而把連線弄斷")
+except Exception as e:
+    bad(f"連線韌性測試出錯：{e}", "看 traceback")
     traceback.print_exc()
 
 # =============================================================================

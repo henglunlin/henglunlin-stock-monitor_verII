@@ -40,17 +40,23 @@ import logging
 import os
 import tempfile
 import threading
+from collections import deque
 from datetime import datetime
 from typing import Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from core import config
+from core import config, fugle_patch
 from core.symbols import symbol_to_code
 from core.ticks import SIDE_BUY, SIDE_SELL, SIDE_UNKNOWN, get_tick_store
 
 log = logging.getLogger(__name__)
+
+# 這一行必須在任何 ws.connect() 之前跑。理由寫在 core/fugle_patch.py 的檔頭：
+# 套件原本的 connect() 連不上時會用 100% CPU 無限空轉，在 0.1 CPU 的 Render 上
+# 會把整個行程拖垮而且永遠回不來 —— 這就是「雲端不定時斷線」的根因。
+fugle_patch.apply()
 
 TW_TZ = ZoneInfo("Asia/Taipei")
 
@@ -93,9 +99,17 @@ class FubonRealtimeManager:
         # --- 新增：連線健康度統計，給看門狗與診斷用 ---
         self.disconnect_count = 0
         self.reconnect_count = 0
+        self.reconnect_fail_count = 0
+        self.stale_count = 0            # 半開連線（沒斷但沒資料）被抓到幾次
         self.last_disconnect_at: datetime | None = None
         self.last_reconnect_at: datetime | None = None
         self.last_reconnect_error: str | None = None
+        # 登入 session 本身失效（不是行情 WebSocket 掉線）。這種重連救不回來，
+        # 一定要重新登入 —— 帳密不在伺服器上，所以只能請前端跳登入視窗。
+        self.session_dead = False
+        # 連線黑盒子：最後 N 筆連線事件。斷線是偶發的、人不一定在看，
+        # 沒有這個就只能靠猜。查完 /api/debug/fubon 就知道當時發生什麼事。
+        self.conn_log: deque = deque(maxlen=60)
         # --- 新增：訂閱 id，退訂時要用 ---
         # {code: subscription_id}。id 是訂閱成功時伺服器回的確認訊息帶進來的，
         # 原本的 _on_message 只挑有成交價的訊息、把確認訊息丟掉了，所以拿不到。
@@ -182,6 +196,10 @@ class FubonRealtimeManager:
                 self.logged_in = True
                 self.connected = True
                 self.error = None
+                # 重新登入等於把連線健康度歸零，看門狗才會重新開始工作
+                self.reconnect_fail_count = 0
+                self.session_dead = False
+            self.note("login", "登入並連上行情 WebSocket")
             log.info("富邦 WebSocket 登入成功")
         except Exception as e:
             try:
@@ -409,10 +427,32 @@ class FubonRealtimeManager:
             except Exception as e:
                 log.warning("on_tick 回呼發生例外（已忽略）：%s", e)
 
+    # ------------------------------------------------------------------
+    # 連線黑盒子
+    # ------------------------------------------------------------------
+    def note(self, kind: str, detail: str = "") -> None:
+        """
+        記一筆連線事件。
+
+        斷線是偶發的，而且多半發生在沒人看畫面的時候。之前每次出事都只能靠
+        「螢幕截圖 + 猜」，這個 ring buffer 就是為了不要再猜：出事後打開
+        /api/debug/fubon（或設定裡的「連線紀錄」）就看得到整條時間軸。
+        只存事件與原因，不存任何憑證。
+        """
+        with self.lock:
+            self.conn_log.append(
+                {
+                    "time": datetime.now(TW_TZ).strftime("%H:%M:%S"),
+                    "kind": kind,
+                    "detail": str(detail)[:200],
+                }
+            )
+
     def _on_connect(self, *_args, **_kwargs):
         with self.lock:
             self.connected = True
             self.error = None
+        self.note("connect", "WebSocket 已連線")
         log.info("富邦 WebSocket 已連線")
 
     def _on_disconnect(self, *_args, **_kwargs):
@@ -420,15 +460,18 @@ class FubonRealtimeManager:
             self.connected = False
             self.disconnect_count += 1
             self.last_disconnect_at = datetime.now(TW_TZ)
+            n = self.disconnect_count
         # 只記錄，實際重連由 hub 的看門狗負責——這個回呼跑在 SDK 的執行緒上，
         # 在裡面做重連會把 SDK 自己的關閉流程卡住。
-        log.warning("富邦 WebSocket 斷線（今日第 %d 次），看門狗會嘗試重連", self.disconnect_count)
+        self.note("disconnect", f"今日第 {n} 次；args={_args or '無'}")
+        log.warning("富邦 WebSocket 斷線（今日第 %d 次），看門狗會嘗試重連", n)
 
     def _on_error(self, *args, **_kwargs):
         detail = args[0] if args else "unknown"
         with self.lock:
             self.connected = False
             self.error = f"WebSocket 錯誤：{detail}"
+        self.note("error", str(detail))
         log.error("富邦 WebSocket 錯誤：%s", detail)
 
     # ------------------------------------------------------------------
@@ -489,27 +532,44 @@ class FubonRealtimeManager:
             log.info("已退訂 %d 檔", len(done))
         return {"unsubscribed": done, "no_id": no_id}
 
+    # 重連連續失敗幾次之後，判定是「登入 session 死了」而不是「行情線掉了」。
+    # 這種情況只能重新登入，而帳密不在伺服器上，所以要讓前端跳登入視窗。
+    SESSION_DEAD_AFTER = 4
+
     def reconnect_and_resubscribe(self, symbols) -> bool:
         """
-        退訂的退路：整條連線重來，只訂閱現在要的那些。
+        整條行情連線重來，只訂閱現在要的那些。退訂拿不到 id 時、以及看門狗
+        偵測到斷線／半開時都走這裡。代價是大約 2–3 秒沒有報價。
 
-        拿不到訂閱 id 時用這個。代價是大約 2–3 秒沒有報價，
-        但至少 subscribed_count 會回到正確的數字。
+        ⚠️ 兩個之前寫錯、這次修掉的地方
+        --------------------------------
+        1. **本來一進來就把 subscribed / prices 清空**。清完才去試連線，連線失敗
+           就回傳 False —— 但狀態已經被清掉了。後果不只是畫面難看：`is_stale()`
+           的第一個條件是 `if not self.subscribed: return False`，也就是
+           **只要重連失敗過一次，半開連線的偵測就永久失效**。
+           現在改成連線真的成功了才換掉舊狀態。
+
+        2. **本來把「連不上」跟「session 過期」當同一件事**，無限重試。
+           前者重試會好，後者重試一萬次也不會好，只會一直燒 0.1 顆 CPU。
+           現在連續失敗 SESSION_DEAD_AFTER 次就掛上 session_dead，
+           讓看門狗停手、前端跳「請重新登入」。
         """
+        old_ws = self.ws
         try:
-            if self.ws is not None:
+            if self.sdk is None:
+                self._note_reconnect_fail("SDK 尚未登入")
+                return False
+
+            # 舊連線先關掉，但**不動 subscribed / prices** —— 新的接起來才換
+            if old_ws is not None:
                 try:
-                    self.ws.disconnect()
+                    old_ws.disconnect()
                 except Exception:
                     pass
-            with self.lock:
-                self.subscribed.clear()
-                self.sub_ids.clear()
-                self.prices.clear()
-                self._dirty.clear()
-                self.connected = False
-            if self.sdk is None:
-                return False
+
+            self.note("reconnect_start", f"目標 {len(symbols)} 檔")
+
+            # init_realtime() 會用登入 session 去換行情 token。session 死了就是這裡拋。
             self.sdk.init_realtime()
             ws = self.sdk.marketdata.websocket_client.stock
             ws.on("message", self._on_message)
@@ -520,23 +580,49 @@ class FubonRealtimeManager:
                     ws.on(name, cb)
                 except Exception:
                     pass          # 某些版本沒有這些事件，不是錯誤
+
+            # 有 core/fugle_patch.py 之後，這行連不上會在 20 秒內拋例外，
+            # 而不是用 100% CPU 空轉到天荒地老。
             ws.connect()
+
+            # ---- 到這裡才算真的接起來，現在才可以換掉舊狀態 ----
             with self.lock:
                 self.ws = ws
                 self.connected = True
+                self.subscribed.clear()
+                self.sub_ids.clear()
+                self._dirty.clear()
+                # prices 刻意不清：新報價還沒進來之前，畫面留著上一筆比留空白好
             self.subscribe_many(symbols)
             with self.lock:
                 self.reconnect_count += 1
                 self.last_reconnect_at = datetime.now(TW_TZ)
                 self.last_reconnect_error = None
-            log.info("已重連並重新訂閱 %d 檔（今日第 %d 次重連）", len(symbols), self.reconnect_count)
+                self.reconnect_fail_count = 0
+                self.session_dead = False
+                self.error = None
+                n = self.reconnect_count
+            self.note("reconnect_ok", f"重新訂閱 {len(symbols)} 檔（今日第 {n} 次）")
+            log.info("已重連並重新訂閱 %d 檔（今日第 %d 次重連）", len(symbols), n)
             return True
         except Exception as e:
-            with self.lock:
-                self.error = f"重連失敗：{e}"
-                self.last_reconnect_error = f"{type(e).__name__}: {e}"
+            self._note_reconnect_fail(f"{type(e).__name__}: {e}")
             log.exception("重連並重新訂閱失敗：%s", e)
             return False
+
+    def _note_reconnect_fail(self, why: str) -> None:
+        with self.lock:
+            self.reconnect_fail_count += 1
+            self.last_reconnect_error = why
+            self.error = f"重連失敗：{why}"
+            self.connected = False
+            fails = self.reconnect_fail_count
+            if fails >= self.SESSION_DEAD_AFTER:
+                self.session_dead = True
+        self.note("reconnect_fail", f"連續第 {fails} 次：{why}")
+        if fails == self.SESSION_DEAD_AFTER:
+            self.note("session_dead", "連續重連失敗，判定登入 session 已失效，需要重新登入")
+            log.error("富邦連續重連失敗 %d 次，判定 session 失效，需要重新登入", fails)
 
     # ------------------------------------------------------------------
     # 讀取
@@ -578,6 +664,18 @@ class FubonRealtimeManager:
             return None
         return (datetime.now(TW_TZ) - last).total_seconds()
 
+    def note_stale(self, gap: float | None) -> None:
+        """看門狗抓到半開連線時呼叫。這種斷法不會觸發 _on_disconnect，
+        沒有這個計數器就完全看不出來發生過什麼事。"""
+        with self.lock:
+            self.stale_count += 1
+            n = self.stale_count
+        self.note(
+            "stale",
+            f"連線看似正常但 {gap:.0f} 秒沒收到資料（今日第 {n} 次）"
+            if gap is not None else f"從未收到任何資料（今日第 {n} 次）",
+        )
+
     def is_stale(self, threshold_sec: float) -> bool:
         """
         連線「看起來還在」但資料已經停了。
@@ -606,10 +704,18 @@ class FubonRealtimeManager:
                 "pending_dirty": len(self._dirty),
                 "disconnect_count": self.disconnect_count,
                 "reconnect_count": self.reconnect_count,
+                "reconnect_fail_count": self.reconnect_fail_count,
+                "stale_count": self.stale_count,
+                "session_dead": self.session_dead,
                 "last_disconnect_at": self.last_disconnect_at,
                 "last_reconnect_at": self.last_reconnect_at,
                 "last_reconnect_error": self.last_reconnect_error,
             }
+
+    def conn_history(self) -> list[dict]:
+        """連線黑盒子的內容，最新的在最前面。不含任何憑證。"""
+        with self.lock:
+            return list(reversed(self.conn_log))
 
     # ------------------------------------------------------------------
     # 收尾

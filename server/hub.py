@@ -41,6 +41,7 @@ from core import groups as core_groups
 from core import quotes, targets, telegram
 from core.detectors import get_detector_engine
 from core.events import get_event_bus
+from core import fugle_patch
 from core.fubon import FubonRealtimeManager
 from core.indicators import compute_indicators
 from core.signals import GENERALIZED_THREE_METHOD_LABELS, run_stock_signals
@@ -100,6 +101,12 @@ class QuoteHub:
         self._clients_lock = threading.Lock()
         self._tasks: list = []
         self._pool = ThreadPoolExecutor(max_workers=FETCH_MAX_WORKERS)
+        # 重連專用的單執行緒池。重連最久會卡 20 秒，不能跟慢線搶預設執行緒池，
+        # 否則一次重連就會把整張表的更新一起拖住。單執行緒也順便保證
+        # 同時間只會有一個重連在跑。
+        self._reconnect_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="fubon-reconnect",
+        )
         self._rows: dict = {}          # {symbol: row dict}，最近一次慢線的結果
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
@@ -111,6 +118,15 @@ class QuoteHub:
         self._loop = asyncio.get_running_loop()
         self._running = True
         state = get_state()
+
+        # 把 keepalive／逾時參數套進 fugle 的 WebSocket client。
+        # 一定要在任何 connect() 之前，登入也算。
+        s0 = state.settings
+        fugle_patch.apply(
+            ping_interval_sec=s0.fubon_ws_ping_sec,
+            ping_timeout_sec=s0.fubon_ws_ping_timeout_sec,
+            connect_timeout_sec=s0.fubon_connect_timeout_sec,
+        )
 
         # 富邦 manager：每筆 tick 順便更新當日高低點追蹤
         state.fubon_manager = FubonRealtimeManager(on_tick=self._on_tick)
@@ -141,6 +157,7 @@ class QuoteHub:
             t.cancel()
         self._tasks = []
         self._pool.shutdown(wait=False)
+        self._reconnect_pool.shutdown(wait=False)
         mgr = get_state().fubon_manager
         if mgr is not None:
             mgr.close()
@@ -328,8 +345,11 @@ class QuoteHub:
         ── 只在盤中運作 ──
         收盤後沒有資料是正常的，不該一直重連。08:45（試撮）到 13:35 之外直接跳過。
         """
-        # 指數退避：連續失敗時拉長間隔，避免對富邦造成連線風暴
-        BACKOFF = [0, 15, 30, 60, 120]
+        # 指數退避：連續失敗時拉長間隔。
+        # ⚠️ 這裡刻意退得比第一版兇：0.1 CPU 的機器上，重連本身就是昂貴動作
+        #    （要重新換 token、重新握手、重新訂閱 190+ 檔），失敗時每 15 秒再來
+        #    一次只會讓行程更沒有 CPU 去收行情，變成自己把自己餓死。
+        BACKOFF = [0, 15, 45, 120, 300]
         fails = 0
         await asyncio.sleep(20)          # 等服務完全起來再開始看
 
@@ -357,9 +377,16 @@ class QuoteHub:
                     await asyncio.sleep(interval)
                     continue
 
+                # 登入 session 死了：重連救不回來，只能重新登入。帳密不在伺服器上，
+                # 所以看門狗到此為止，改由前端顯示「請重新登入」。
+                if getattr(mgr, "session_dead", False):
+                    await asyncio.sleep(max(interval, 30))
+                    continue
+
                 status = mgr.get_status()
                 stale_sec = max(30, int(s.fubon_stale_sec))
-                dead = (not status.get("connected")) or mgr.is_stale(stale_sec)
+                stale = mgr.is_stale(stale_sec)
+                dead = (not status.get("connected")) or stale
 
                 if not dead:
                     fails = 0
@@ -367,6 +394,9 @@ class QuoteHub:
                     continue
 
                 gap = mgr.seconds_since_last_message()
+                if stale and status.get("connected"):
+                    # 半開連線：_on_disconnect 不會觸發，不記一筆就完全查不到
+                    mgr.note_stale(gap)
                 log.warning(
                     "看門狗偵測到富邦連線異常（connected=%s、距上次資料 %s 秒），開始重連",
                     status.get("connected"),
@@ -377,8 +407,12 @@ class QuoteHub:
                     await asyncio.sleep(wait)
 
                 symbols = self.all_symbols()
+                # ⚠️ 用專屬的執行緒池，不要用預設的那個。
+                # 重連最久會卡 20 秒（fugle_patch 的逾時）。預設執行緒池是所有
+                # run_in_executor 共用的，慢線的指標計算也在裡面跑；重連把它佔滿
+                # 的話會連帶把整張表的更新一起卡住。
                 ok = await self._loop.run_in_executor(
-                    None, mgr.reconnect_and_resubscribe, symbols,
+                    self._reconnect_pool, mgr.reconnect_and_resubscribe, symbols,
                 )
                 if ok:
                     fails = 0

@@ -127,6 +127,15 @@ class Settings:
     # 盤中 197 檔訂閱下，正常情況每秒都有訊息，120 秒是很保守的門檻。
     fubon_stale_sec: int = 120
     fubon_watchdog_interval_sec: int = 15
+    # 行情 WebSocket 的 socket 層 keepalive（秒）。0 = 關閉。
+    # 跨海連線最怕中間的 NAT/LB 靜靜把 idle 連線收掉，兩邊都不知道。
+    fubon_ws_ping_sec: int = 20
+    # 要求對方回 pong 的逾時（秒）。0 = 只送 ping、不強制要 pong。
+    # ⚠️ 預設 0：萬一富邦的閘道不回 protocol-level pong，開這個會把好好的
+    #    連線砍掉，比不修還糟。對方真的掛掉的偵測交給 SDK 的應用層 health check。
+    fubon_ws_ping_timeout_sec: int = 0
+    # 連線＋認證的硬逾時（秒）。套件原本沒有逾時，連不上會 100% CPU 空轉到死。
+    fubon_connect_timeout_sec: int = 20
 
     # 🔺 即將漲停 / 跌停：漲跌幅達到這個值就預警（真正的漲停價另外用升降單位算）
     limit_approach_pct: float = 7.5
@@ -463,6 +472,13 @@ class AppState:
                     # 連線健康度：讓「今天到底斷過幾次」看得見，而不是只能猜
                     "disconnect_count": manager_status.get("disconnect_count", 0),
                     "reconnect_count": manager_status.get("reconnect_count", 0),
+                    "reconnect_fail_count": manager_status.get("reconnect_fail_count", 0),
+                    # 半開連線：連線看起來還在、但資料停了。這種斷法不會觸發斷線
+                    # 回呼，disconnect_count 會一直是 0 —— 只看那個數字會以為
+                    # 「今天沒斷過」，實際上行情早就停了。上一版就是栽在這裡。
+                    "stale_count": manager_status.get("stale_count", 0),
+                    # 登入 session 失效，重連救不回來，要請使用者重新登入
+                    "session_dead": bool(manager_status.get("session_dead", False)),
                     "last_reconnect_at": (
                         manager_status["last_reconnect_at"].isoformat(timespec="seconds")
                         if isinstance(manager_status.get("last_reconnect_at"), datetime) else None

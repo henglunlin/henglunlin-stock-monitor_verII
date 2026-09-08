@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useStore } from '../store'
-import type { DetectorDebug, Settings, WsDebug } from '../types'
+import type { DetectorDebug, FubonDebug, Settings, WsDebug } from '../types'
 import { Modal } from './Modal'
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
@@ -67,6 +67,91 @@ function StatusLine({ label, value, ok }: { label: string; value: string; ok?: b
       <span className={`text-right font-mono tabular-nums ${ok === false ? 'text-rose-400' : 'text-zinc-200'}`}>
         {value}
       </span>
+    </div>
+  )
+}
+
+/** 每種連線事件的顏色。看一眼顏色就知道今天這條線過得好不好 */
+const KIND_STYLE: Record<string, { color: string; label: string }> = {
+  login: { color: 'text-emerald-300', label: '登入' },
+  connect: { color: 'text-emerald-300', label: '已連線' },
+  disconnect: { color: 'text-amber-300', label: '斷線' },
+  stale: { color: 'text-amber-300', label: '假死' },
+  error: { color: 'text-rose-300', label: '錯誤' },
+  reconnect_start: { color: 'text-sky-300', label: '重連中' },
+  reconnect_ok: { color: 'text-emerald-300', label: '重連成功' },
+  reconnect_fail: { color: 'text-rose-300', label: '重連失敗' },
+  session_dead: { color: 'text-rose-400', label: 'session 失效' },
+}
+
+/**
+ * 連線黑盒子。
+ *
+ * 斷線幾乎都發生在沒人看畫面的時候，事後只剩一張截圖可以看，根本查不出是哪一種
+ * 斷法。這裡把後端記的整條時間軸攤開：什麼時間、哪一種事件、失敗的原因是什麼。
+ * 下次再斷線，打開這個截圖給我就夠了，不用再猜。
+ */
+function ConnLog() {
+  const [data, setData] = useState<FubonDebug | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setData(await api.fubonDebug())
+    } catch (e) {
+      setData({ available: false, reason: String(e) })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={load}
+          className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800"
+        >
+          {loading ? '讀取中…' : '📋 連線紀錄'}
+        </button>
+        {data?.available && (
+          <span className="text-[11px] tabular-nums text-zinc-500">
+            斷線 {data.disconnect_count ?? 0} · 假死 {data.stale_count ?? 0} ·
+            重連 {data.reconnect_count ?? 0} · 失敗 {data.reconnect_fail_count ?? 0}
+            {data.seconds_since_last_message != null &&
+              ` · 距上次資料 ${Math.round(data.seconds_since_last_message)}s`}
+          </span>
+        )}
+      </div>
+
+      {data && !data.available && (
+        <p className="mt-2 text-[11px] text-zinc-500">{data.reason}</p>
+      )}
+
+      {data?.available && (
+        <div className="mt-2 max-h-56 overflow-y-auto rounded border border-zinc-800 bg-zinc-950">
+          {(data.history ?? []).length === 0 ? (
+            <p className="px-3 py-3 text-[11px] text-zinc-500">
+              今天還沒有任何連線事件——這是好事，代表沒斷過。
+            </p>
+          ) : (
+            (data.history ?? []).map((h, i) => {
+              const st = KIND_STYLE[h.kind] ?? { color: 'text-zinc-300', label: h.kind }
+              return (
+                <div
+                  key={i}
+                  className="flex gap-3 border-b border-zinc-900 px-3 py-1.5 text-[11px] last:border-b-0"
+                >
+                  <span className="shrink-0 font-mono tabular-nums text-zinc-500">{h.time}</span>
+                  <span className={`w-20 shrink-0 font-medium ${st.color}`}>{st.label}</span>
+                  <span className="break-all text-zinc-400">{h.detail}</span>
+                </div>
+              )
+            })
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -409,6 +494,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               {fubon.error}
             </div>
           )}
+          <ConnLog />
         </Section>
 
         <Section title="🕐 目前資料來源狀態">

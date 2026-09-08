@@ -70,9 +70,42 @@ export interface FubonStatus {
   error: string | null
   /** 今日斷線次數。雲端跨海連線本來就會抖，重點是有沒有自動接回來 */
   disconnect_count: number
+  /** 半開連線被抓到的次數。這種斷法不會觸發斷線回呼，disconnect_count 會是 0 */
+  stale_count: number
   reconnect_count: number
+  reconnect_fail_count: number
+  /** 登入 session 失效：重連救不回來，要重新登入 */
+  session_dead: boolean
   last_reconnect_at: string | null
   last_reconnect_error: string | null
+}
+
+/** /api/debug/fubon 的一筆連線事件 */
+export interface ConnLogEntry {
+  time: string
+  kind: string
+  detail: string
+}
+
+/** /api/debug/fubon：連線黑盒子。斷線是偶發的，靠這個才不用再靠截圖猜 */
+export interface FubonDebug {
+  available: boolean
+  reason?: string
+  logged_in?: boolean
+  connected?: boolean
+  subscribed_count?: number
+  tick_count?: number
+  seconds_since_last_message?: number | null
+  is_stale?: boolean
+  disconnect_count?: number
+  stale_count?: number
+  reconnect_count?: number
+  reconnect_fail_count?: number
+  session_dead?: boolean
+  last_reconnect_error?: string | null
+  error?: string | null
+  watchdog?: Record<string, number | boolean>
+  history?: ConnLogEntry[]
 }
 
 export interface Settings {
@@ -118,6 +151,9 @@ export interface Settings {
   fubon_watchdog_enabled: boolean
   fubon_stale_sec: number
   fubon_watchdog_interval_sec: number
+  fubon_ws_ping_sec: number
+  fubon_ws_ping_timeout_sec: number
+  fubon_connect_timeout_sec: number
 }
 
 /** 盤中事件的種類。數字越大越重要（見 core/events.py 的 PRIORITY） */

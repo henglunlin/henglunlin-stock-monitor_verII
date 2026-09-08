@@ -95,6 +95,9 @@ class SettingsPatch(BaseModel):
     fubon_watchdog_enabled: bool | None = None
     fubon_stale_sec: int | None = None
     fubon_watchdog_interval_sec: int | None = None
+    fubon_ws_ping_sec: int | None = None
+    fubon_ws_ping_timeout_sec: int | None = None
+    fubon_connect_timeout_sec: int | None = None
 
 
 # =============================================================================
@@ -343,7 +346,17 @@ async def read_settings():
 @router.patch("/settings", dependencies=auth)
 async def patch_settings(patch: SettingsPatch):
     changes = {k: v for k, v in patch.model_dump().items() if v is not None}
-    return get_state().update_settings(changes).to_dict()
+    s = get_state().update_settings(changes)
+    # keepalive／逾時是套在 fugle 的 client 類別上的，改了設定要立刻生效
+    # （下一次連線就會用新值；已經連著的那條維持原本的 ping 週期）
+    if any(k.startswith("fubon_ws_") or k == "fubon_connect_timeout_sec" for k in changes):
+        from core import fugle_patch
+        fugle_patch.apply(
+            ping_interval_sec=s.fubon_ws_ping_sec,
+            ping_timeout_sec=s.fubon_ws_ping_timeout_sec,
+            connect_timeout_sec=s.fubon_connect_timeout_sec,
+        )
+    return s.to_dict()
 
 
 # =============================================================================
@@ -463,6 +476,52 @@ async def debug_signals(symbol: str):
         "signals": results,
         "last_3_bars": tail.to_dict(orient="records"),
     })
+
+
+@router.get("/debug/fubon", dependencies=auth)
+async def debug_fubon():
+    """
+    富邦連線黑盒子。
+
+    斷線是偶發的，而且多半發生在沒人盯著畫面的時候。之前每次出事都只剩一張
+    截圖可以看，只能猜是哪一種斷法。這支把「今天這條連線發生過什麼事」整條
+    時間軸吐出來：登入、連上、斷線、半開被抓到、重連成功／失敗與失敗原因。
+
+    **不含任何憑證**——只有事件種類、時間與錯誤訊息。
+    """
+    state = get_state()
+    mgr = state.fubon_manager
+    if mgr is None:
+        return {"available": False, "reason": "富邦 manager 尚未建立"}
+
+    st = mgr.get_status()
+    gap = mgr.seconds_since_last_message()
+    s = state.settings
+    return {
+        "available": True,
+        "logged_in": st.get("logged_in"),
+        "connected": st.get("connected"),
+        "subscribed_count": st.get("subscribed_count"),
+        "tick_count": st.get("tick_count"),
+        "seconds_since_last_message": round(gap, 1) if gap is not None else None,
+        "is_stale": mgr.is_stale(max(30, int(s.fubon_stale_sec))),
+        "disconnect_count": st.get("disconnect_count"),
+        "stale_count": st.get("stale_count"),
+        "reconnect_count": st.get("reconnect_count"),
+        "reconnect_fail_count": st.get("reconnect_fail_count"),
+        "session_dead": st.get("session_dead"),
+        "last_reconnect_error": st.get("last_reconnect_error"),
+        "error": st.get("error"),
+        "watchdog": {
+            "enabled": s.fubon_watchdog_enabled,
+            "stale_sec": s.fubon_stale_sec,
+            "interval_sec": s.fubon_watchdog_interval_sec,
+            "connect_timeout_sec": s.fubon_connect_timeout_sec,
+            "ws_ping_sec": s.fubon_ws_ping_sec,
+            "ws_ping_timeout_sec": s.fubon_ws_ping_timeout_sec,
+        },
+        "history": mgr.conn_history(),
+    }
 
 
 @router.get("/debug/ws", dependencies=auth)
