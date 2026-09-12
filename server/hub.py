@@ -38,7 +38,7 @@ from typing import Any
 import pandas as pd
 
 from core import groups as core_groups
-from core import quotes, targets, telegram
+from core import notify, quotes, targets, telegram
 from core.detectors import get_detector_engine
 from core.events import get_event_bus
 from core import fugle_patch
@@ -148,7 +148,7 @@ class QuoteHub:
             asyncio.create_task(self._row_loop(), name="row_loop"),
             asyncio.create_task(self._detector_loop(), name="detector_loop"),
             asyncio.create_task(self._fubon_watchdog(), name="fubon_watchdog"),
-            asyncio.create_task(self._telegram_loop(), name="telegram_loop"),
+            asyncio.create_task(self._digest_loop(), name="digest_loop"),
         ]
 
     async def stop(self) -> None:
@@ -579,9 +579,13 @@ class QuoteHub:
 
         data = compute_indicators(df, price, price_ref_date=price_ref_date)
 
+        # target_table 已經在 compute_all_rows 載好了，這裡只是取出這一檔那一筆。
+        # 少了這個參數，signal_module/target_price.py 的「進入買入區間」與
+        # 「觸及停損價格」會永遠 hit=False 而且不報錯（見 core/signals.py 的說明）。
         hit_list, signal_text = run_stock_signals(
             symbol, name, df, open_val, high_val, low_val, price,
             rise_threshold=rise_threshold, price_ref_date=price_ref_date,
+            target_entry=(target_table or {}).get(symbol),
         )
 
         # ── 每列的迷你走勢圖有兩條資料，前端優先畫盤中那條 ──
@@ -630,59 +634,111 @@ class QuoteHub:
         return [json_safe(r) for r in self._rows.values()]
 
     # ------------------------------------------------------------------
-    # Telegram
+    # 定時彙整推播（LINE ＋ Telegram）
     # ------------------------------------------------------------------
-    async def _telegram_loop(self) -> None:
+    def _parse_slots(self, raw) -> list[tuple[int, int]]:
         """
-        取代原本寫在 render_live_monitor() 裡的推播邏輯。
+        把設定裡的 ["09:40", "10:00", ...] 解析成 [(9, 40), (10, 0), ...]。
 
-        最大的差別：**這裡不需要有人開著網頁**。原版推播綁在 Streamlit fragment 上，
-        頁面沒開就不推；現在它是 server 的背景任務，開著就會跑。
+        格式壞掉的項目安靜跳過，不讓一個手打錯的字串把整條迴圈弄掛——
+        這條迴圈掛掉的症狀是「整天沒有任何推播也沒有錯誤」，最難查。
         """
-        TARGET_SLOTS = [(9, 40), (10, 0), (11, 0), (12, 0), (13, 0)]
+        slots: list[tuple[int, int]] = []
+        for item in (raw or []):
+            try:
+                hh_s, _, mm_s = str(item).strip().partition(":")
+                hh, mm = int(hh_s), int(mm_s)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= hh <= 23 and 0 <= mm <= 59 and (hh, mm) not in slots:
+                slots.append((hh, mm))
+        return slots
+
+    async def _digest_loop(self) -> None:
+        """
+        定時彙整推播。原本叫 _telegram_loop，改名是因為它現在同時餵兩條管道
+        （LINE ＋ Telegram），名字不改的話下一個人會以為 LINE 那條在別的地方。
+
+        最大的差別（搬家帶來的紅利，保留原註解的重點）：**這裡不需要有人開著
+        網頁**。原版推播綁在 Streamlit fragment 上，頁面沒開就不推。
+
+        ── 兩條管道的職責分離 ──
+        定時彙整  → LINE ＋ Telegram（由 core/notify.py 依設定分派）
+        即時事件  → 只走 Telegram（_push_events，維持原行為）
+        push 指令 → 只回 Telegram（你在哪下指令就在哪收回覆）
+        """
         while self._running:
             try:
                 state = get_state()
-                if not state.settings.tg_push_enabled or not telegram.telegram_configured():
+                s = state.settings
+
+                # 兩條管道都關（或都沒設定）才真的整段跳過。
+                # ⚠️ 不能像原本那樣只看 tg_push_enabled 就 continue——
+                #    那樣「只開 LINE、關掉 Telegram」會變成一則都不推。
+                targets_now = notify.digest_targets()
+                if not any(targets_now.values()):
                     await asyncio.sleep(30)
                     continue
 
-                # 收到 'push' 指令 → 清空去重、強制推一次
-                forced = await self._loop.run_in_executor(None, telegram.poll_push_command)
-                if forced:
-                    state.clear_notified()
-                    telegram.send_message("🤖 <b>收到指令，開始為您掃描並強制推播強勢股…</b>")
+                # 收到 'push' 指令 → 清空去重、強制推一次。
+                # 指令來源是 Telegram，所以只在 Telegram 可用時才輪詢。
+                forced = False
+                if s.tg_push_enabled and telegram.telegram_configured():
+                    forced = await self._loop.run_in_executor(
+                        None, telegram.poll_push_command,
+                    )
+                    if forced:
+                        state.clear_notified()
+                        telegram.send_message(
+                            "🤖 <b>收到指令，開始為您掃描並強制推播強勢股…</b>"
+                        )
 
+                slot_label: str | None = None
                 should_push = forced
-                if state.settings.scheduled_push_enabled and not forced:
+                if s.scheduled_push_enabled and not forced:
                     now = datetime.now(TW_TZ)
-                    for hh, mm in TARGET_SLOTS:
+                    for hh, mm in self._parse_slots(s.push_slots):
                         key = f"{now:%Y%m%d}-{hh:02d}{mm:02d}"
                         if now.hour == hh and now.minute == mm and not state.slot_processed(key):
                             state.mark_slot_processed(key)
                             should_push = True
+                            slot_label = f"{hh:02d}:{mm:02d}"
                             break
 
                 if should_push:
-                    await self._loop.run_in_executor(None, self._push_signals)
+                    # 強制推播只回 Telegram；排程推播照設定分派
+                    channels = {"telegram": True, "line": False} if forced else None
+                    await self._loop.run_in_executor(
+                        None, self._push_signals, slot_label, channels,
+                    )
 
                 await asyncio.sleep(20)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                log.exception("telegram_loop 發生例外，30 秒後續跑：%s", e)
+                log.exception("digest_loop 發生例外，30 秒後續跑：%s", e)
                 await asyncio.sleep(30)
 
-    def _push_signals(self) -> None:
+    def _collect_digest_entries(self) -> list[dict]:
         """
-        把目前命中的訊號整理成一則訊息推出去。
+        把目前命中的訊號整理成 notify.push_digest() 吃的清單，並做完去重。
 
         沿用原版兩條規則：
           1. 每檔股票每天只推一次（AppState.notified_stocks 去重，會自動換日重置）
           2. 廣義上升／下降三法單獨出現時不推，跟其他訊號一起命中才推
+
+        ⚠️ 兩個刻意的改動 ──
+        a) 訊號清單改用 row["signals"] 依優先等級排序後的完整 label，
+           不再用 row["signal_text"]。signal_text 只留「最高優先等級的那一群」，
+           所以一檔同時命中「進入買入區間(等級1)」與「漲停(等級2)」時，
+           signal_text 只會有前者，漲停就這樣被顯示邏輯順手吃掉了。
+           要不要砍、砍幾個，應該由推播端決定（LINE 砍成 2 個、Telegram 不砍）。
+        b) 去重 key 改用「排序後的 label 串」而不是 signal_text，理由同上：
+           signal_text 會因為某個高優先訊號出現而整串變掉，讓同一檔在同一天
+           被當成新訊號再推一次。
         """
         state = get_state()
-        lines = []
+        entries: list[dict] = []
         for row in self.latest_rows():
             hits = row.get("signals") or []
             if not hits:
@@ -690,17 +746,35 @@ class QuoteHub:
             labels = {h["label"] for h in hits}
             if labels and labels <= GENERALIZED_THREE_METHOD_LABELS:
                 continue                      # 只有三法 → 雜訊，跳過
-            key = f"{row['symbol']}:{row.get('signal_text', '')}"
+
+            ordered = notify.sorted_labels(hits)
+            if not ordered:
+                continue
+            key = f"{row['symbol']}:{'|'.join(ordered)}"
             if state.already_notified(key):
                 continue
             state.mark_notified(key)
-            lines.append(
-                f"<b>{row['code']} {row['name']}</b>  {row['price']}  "
-                f"({row['pct']:+.2f}%)\n　{row.get('signal_text', '-')}"
-            )
-        if lines:
-            telegram.send_message("📈 <b>訊號通知</b>\n\n" + "\n\n".join(lines))
-            log.info("Telegram 推播 %d 檔", len(lines))
+
+            try:
+                price = float(row.get("price"))
+                pct = float(row.get("pct"))
+            except (TypeError, ValueError):
+                continue                      # 價格拿不到的那一列不推，不推比推錯好
+            entries.append({
+                "code": row["code"],
+                "name": row["name"],
+                "price": price,
+                "pct": pct,
+                "labels": ordered,
+            })
+        return entries
+
+    def _push_signals(self, slot: str | None = None, channels: dict | None = None) -> None:
+        """收集 → 分派。在背景執行緒跑（requests 是同步的）。"""
+        entries = self._collect_digest_entries()
+        if not entries:
+            return
+        notify.push_digest(entries, slot, channels=channels)
 
 
 hub = QuoteHub()

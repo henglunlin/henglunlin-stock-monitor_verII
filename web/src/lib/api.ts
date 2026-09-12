@@ -8,8 +8,8 @@
  *     CORSMiddleware 放行 Vercel 的網域。
  */
 import type {
-  DetectorDebug, FubonDebug, GithubDebug, IntradaySeries, MarketEvent, Row, Settings,
-  Status, SymbolHit, TaiexSnapshot, WsDebug,
+  DetectorDebug, FubonDebug, GithubDebug, IntradaySeries, LineDebug, MarketEvent, Row,
+  Settings, Status, SymbolHit, TaiexSnapshot, WsDebug,
 } from '../types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
@@ -86,6 +86,13 @@ export const api = {
   detectorDebug: () => request<DetectorDebug>('/api/debug/detector'),
   fubonDebug: () => request<FubonDebug>('/api/debug/fubon'),
   githubDebug: () => request<GithubDebug>('/api/debug/github'),
+  lineDebug: () => request<LineDebug>('/api/debug/line'),
+  /** 發一則測試推播。走的是與正式推播完全相同的後端函式 */
+  testPush: (channel: 'line' | 'telegram') =>
+    request<{ ok: boolean; reason?: string }>('/api/notify/test', {
+      method: 'POST',
+      body: JSON.stringify({ channel }),
+    }),
 
   events: (limit = 200) =>
     request<{ events: MarketEvent[]; counts: Record<string, number> }>(`/api/events?limit=${limit}`),

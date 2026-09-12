@@ -14,6 +14,15 @@
  *
  * 快線（報價推送）沒有開關，因為它幾乎不花成本：只推這 300ms 內變動過的股票，
  * 沒變動就完全不發包。關掉它省不到什麼，卻會讓價格停在舊值。
+ *
+ * ── 推播開關只留兩顆 ──
+ * 這裡只放 `LINE 推送` 與 `Telegram 推送` 兩顆管道總開關，其餘推播細節
+ * （定時時段、彙整要送哪些管道、LINE 格式、即時事件門檻）全部在 ⚙️ 設定 的
+ * 「🔔 推播」區。原本的 `定時推送模式` 已經搬進去了。
+ *
+ * 兩條管道的職責是分開的：
+ *   LINE      → 盤中定時彙整（一天五個時段）
+ *   Telegram  → 盤中即時事件、push 指令，以及彙整的完整紀錄那一份
  */
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
@@ -121,18 +130,22 @@ export function Toolbar({ onRefresh }: { onRefresh: () => Promise<void> }) {
         />
       </label>
 
+      {/*
+        Toolbar 上只留兩顆「管道總開關」。時段、格式、要推哪些管道這些細節
+        全部在 ⚙️ 設定 裡——工具列是盤中一眼要看到的地方，放五顆開關就沒人看了。
+      */}
+      <Toggle
+        on={!!s?.line_push_enabled}
+        onChange={(v) => patch({ line_push_enabled: v })}
+        label="LINE 推送"
+        hint="定時彙整推播走 LINE。時段與格式在 ⚙️ 設定 裡調"
+      />
+
       <Toggle
         on={!!s?.tg_push_enabled}
         onChange={(v) => patch({ tg_push_enabled: v })}
         label="Telegram 推送"
-        hint="開著時，即使沒有人打開網頁，後端一樣會推播"
-      />
-
-      <Toggle
-        on={!!s?.scheduled_push_enabled}
-        onChange={(v) => patch({ scheduled_push_enabled: v })}
-        label="定時推送模式"
-        hint="09:40 / 10:00 / 11:00 / 12:00 / 13:00 各推一次"
+        hint="盤中即時事件與 push 指令走 Telegram。開著時即使沒人打開網頁也會推"
       />
 
       <div className="ml-auto flex items-center gap-2">

@@ -91,11 +91,36 @@ class Settings:
     # 偵測線：盤中事件偵測的掃描間隔（毫秒）。
     # 拉抬用 2 秒窗，所以這個值不能超過 2000，否則 2 秒訊號會被跳過。
     detector_interval_ms: int = 1000
-    # Telegram
-    tg_push_enabled: bool = False
-    scheduled_push_enabled: bool = False
+    # ── 推播：兩顆總開關（Toolbar 上那兩顆）──
+    # 這兩個是「該管道的總閘門」：關掉 tg_push_enabled，即時事件、push 指令、
+    # 定時彙整的 Telegram 那份全停；關掉 line_push_enabled，LINE 一則都不發。
+    #
+    # ⚠️ 預設值從 False 改成 True 了。原本預設關是因為第一版前端沒有開關介面，
+    # 值只能打 API 改；現在 Toolbar 有兩顆開關了，預設關會讓全新部署看起來像壞的
+    # （等了一整天沒收到任何推播，而且沒有任何錯誤訊息）。
+    tg_push_enabled: bool = True
+    line_push_enabled: bool = True
+
+    # ── 定時彙整推播（細節都在設定頁）──
+    scheduled_push_enabled: bool = True
+    # 推播時段。原本寫死在 hub.py 的 TARGET_SLOTS，改成設定值才能在介面上改。
+    # 格式一律 "HH:MM"（24 小時制）；解析失敗的項目會被安靜跳過，不會讓迴圈掛掉。
+    push_slots: list = field(
+        default_factory=lambda: ["09:40", "10:00", "11:00", "12:00", "13:00"]
+    )
+    # 定時彙整要送哪些管道（下層閘門，還要看上面兩顆總開關）
+    digest_to_telegram: bool = True
+    digest_to_line: bool = True
+    # LINE 的訊息格式："text"（純文字，預設）| "flex"（卡片）
+    line_message_format: str = "text"
+    # LINE 每檔最多列幾個訊號。LINE 免費方案每月 200 則、分段一段算一則，
+    # 所以字數是有價的。Telegram 不受這個限制，仍然列完整清單當當日紀錄。
+    line_max_signals_per_stock: int = 2
+
     # 盤中事件要推 Telegram 的最低優先權（見 core/events.py 的 PRIORITY）。
     # 預設 2 = 反彈以上都推，預警(1)不推——預警在 193 檔上很吵，適合留在畫面看。
+    # ⚠️ 即時事件刻意只走 Telegram，不走 LINE：1 秒偵測線配 193 檔，
+    #    LINE 的月額度撐不住，而且即時訊號本來就該去最吵的那條管道。
     tg_event_min_priority: int = 2
     # 分組存檔時是否同步推回 GitHub
     sync_groups_to_github: bool = True

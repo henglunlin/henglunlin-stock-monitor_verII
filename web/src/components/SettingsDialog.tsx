@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useStore } from '../store'
-import type { DetectorDebug, FubonDebug, Settings, WsDebug } from '../types'
+import type { DetectorDebug, FubonDebug, LineDebug, Settings, WsDebug } from '../types'
 import { Modal } from './Modal'
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
@@ -57,6 +57,198 @@ function Radio({
         {hint && <span className="block text-[11px] leading-relaxed text-zinc-600">{hint}</span>}
       </span>
     </label>
+  )
+}
+
+function Check({
+  on, onChange, label, hint,
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+  label: string
+  hint?: string
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2.5 py-1.5">
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-[3px] accent-emerald-500"
+      />
+      <span>
+        <span className={`text-xs ${on ? 'text-zinc-100' : 'text-zinc-400'}`}>{label}</span>
+        {hint && <span className="block text-[11px] leading-relaxed text-zinc-600">{hint}</span>}
+      </span>
+    </label>
+  )
+}
+
+/**
+ * 推播時段編輯器。
+ *
+ * ── 為什麼是本地草稿而不是即時 PATCH ──
+ * 這一欄是逗號分隔的字串，打字過程中必然會經過「09:40,」這種還沒打完的中間狀態。
+ * 如果每個字元都 PATCH，後端會收到一串半成品（`_parse_slots` 會安靜丟掉它們），
+ * 而且剛好在那一秒到點的話會真的漏推一次。所以改成 blur 或按 Enter 才送——
+ * 這跟 GroupEditor 明確按儲存才寫入是同一個理由。
+ */
+function SlotEditor({
+  slots, onCommit,
+}: {
+  slots: string[]
+  onCommit: (next: string[]) => void
+}) {
+  const joined = (slots || []).join(', ')
+  const [draft, setDraft] = useState(joined)
+  const [dirty, setDirty] = useState(false)
+
+  // 別人（另一台裝置）改了設定就跟上，但不要蓋掉正在打的字
+  useEffect(() => {
+    if (!dirty) setDraft(joined)
+  }, [joined, dirty])
+
+  function commit() {
+    const next = draft
+      .split(/[,，\s]+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+      // 只送格式正確的（HH:MM），順手把 9:40 補成 09:40
+      .map((x) => {
+        const m = /^(\d{1,2}):(\d{2})$/.exec(x)
+        if (!m) return null
+        const hh = Number(m[1])
+        const mm = Number(m[2])
+        if (hh > 23 || mm > 59) return null
+        return `${String(hh).padStart(2, '0')}:${m[2]}`
+      })
+      .filter((x): x is string => x !== null)
+    setDirty(false)
+    onCommit(Array.from(new Set(next)))
+  }
+
+  const invalid = dirty && draft.trim() !== '' && !/^(\s*\d{1,2}:\d{2}\s*[,，]?\s*)+$/.test(draft)
+
+  return (
+    <div>
+      <input
+        value={draft}
+        onChange={(e) => { setDraft(e.target.value); setDirty(true) }}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit() }}
+        placeholder="09:40, 10:00, 11:00, 12:00, 13:00"
+        className={`w-full rounded border bg-zinc-900 px-2 py-1 font-mono text-xs tabular-nums text-zinc-100 ${
+          invalid ? 'border-rose-600' : 'border-zinc-700'
+        }`}
+      />
+      <p className="mt-1 text-[11px] leading-relaxed text-zinc-600">
+        逗號分隔，24 小時制 HH:MM。離開欄位或按 Enter 才送出。
+        {dirty && <span className="ml-1 text-amber-500">尚未儲存</span>}
+        {invalid && <span className="ml-1 text-rose-400">格式不符的項目會被略過</span>}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * LINE 推播狀態與測試。
+ *
+ * 這一區存在的理由跟「連線黑盒子」一樣：LINE 推播失敗時你不會在畫面上看到任何
+ * 東西（推播是背景任務），只能靠這裡看最後一次的結果。`error` 欄位是查問題的
+ * 唯一線索——LINE 回的狀態碼只說 400/401/429，真正原因（token 過期、對象 id 錯、
+ * 月額度用盡）都在 body 裡。
+ */
+function LinePanel() {
+  const [data, setData] = useState<LineDebug | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [testMsg, setTestMsg] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api.lineDebug())
+    } catch {
+      setData(null)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function test(channel: 'line' | 'telegram') {
+    setBusy(true)
+    setTestMsg(null)
+    try {
+      const r = await api.testPush(channel)
+      setTestMsg(r.ok ? `✅ ${channel === 'line' ? 'LINE' : 'Telegram'} 已送出，去手機看看` : `❌ ${r.reason ?? '送出失敗'}`)
+    } catch (e) {
+      setTestMsg(`❌ ${String(e)}`)
+    } finally {
+      setBusy(false)
+      load()
+    }
+  }
+
+  const lastOk = data?.ok
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
+        <span className="flex items-center gap-1.5">
+          <span className={`h-2 w-2 rounded-full ${data?.configured ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+          <span className={data?.configured ? 'text-zinc-200' : 'text-zinc-500'}>
+            {data?.configured ? `LINE 已設定（對象 …${data.target_tail}）` : 'LINE 未設定'}
+          </span>
+        </span>
+        <button
+          onClick={() => test('line')}
+          disabled={busy}
+          className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {busy ? '送出中…' : '📨 測試 LINE'}
+        </button>
+        <button
+          onClick={() => test('telegram')}
+          disabled={busy}
+          className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+        >
+          📨 測試 Telegram
+        </button>
+      </div>
+
+      {!data?.configured && (
+        <p className="mb-2 text-[11px] leading-relaxed text-amber-500/80">
+          需要在 Render 的 Environment 設 <code className="font-mono">LINE_CHANNEL_ACCESS_TOKEN</code> 與{' '}
+          <code className="font-mono">LINE_TO</code>。憑證只走環境變數，不存在設定檔裡。
+          （LINE Notify 已於 2025-03-31 終止服務，這裡用的是 Messaging API。）
+        </p>
+      )}
+
+      {testMsg && <p className="mb-2 text-[11px] text-zinc-300">{testMsg}</p>}
+
+      {data && (
+        <div className="rounded border border-zinc-800 bg-zinc-950/40 px-3 py-1">
+          <StatusLine
+            label="定時彙整實際送往"
+            value={
+              [
+                data.digest_targets.line ? 'LINE' : null,
+                data.digest_targets.telegram ? 'Telegram' : null,
+              ].filter(Boolean).join(' ＋ ') || '（兩條都不會送）'
+            }
+            ok={data.digest_targets.line || data.digest_targets.telegram}
+          />
+          <StatusLine label="最後一次 LINE 推播" value={data.at ?? '尚未推播過'} />
+          <StatusLine
+            label="結果"
+            value={lastOk === null || lastOk === undefined ? '—' : lastOk ? `成功（${data.messages} 則）` : `失敗 ${data.status ?? ''}`}
+            ok={lastOk !== false}
+          />
+          {data.error && (
+            <p className="break-all py-1.5 text-[11px] leading-relaxed text-rose-400">
+              {data.error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -406,6 +598,113 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               )}
             </div>
           )}
+        </Section>
+
+        {/*
+          🔔 推播。Toolbar 只留兩顆管道總開關，細節全部在這一區。
+
+          兩條管道的職責是分開的，這不是設定失誤：
+            LINE      → 盤中定時彙整（一天幾個時段，手機上掃一眼）
+            Telegram  → 盤中即時事件、push 指令，加上彙整的完整紀錄那一份
+          即時事件刻意不走 LINE：1 秒偵測線配 198 檔，LINE 每月 200 則的
+          免費額度一個上午就會用完。
+        */}
+        <Section
+          title="🔔 推播"
+          hint="LINE 負責定時彙整、Telegram 負責即時事件。管道總開關在工具列上，這裡調細節。"
+        >
+          <Check
+            on={s.scheduled_push_enabled}
+            onChange={(v) => patch({ scheduled_push_enabled: v })}
+            label="定時推送模式"
+            hint="只在下面列的時段各推一次彙整訊息。關掉就只剩 Telegram 的即時事件與 push 指令。"
+          />
+
+          {s.scheduled_push_enabled && (
+            <div className="mt-2 border-l-2 border-zinc-800 pl-3">
+              <p className="mb-1.5 text-[11px] text-zinc-500">推播時段</p>
+              <SlotEditor slots={s.push_slots} onCommit={(v) => patch({ push_slots: v })} />
+
+              <p className="mt-3 mb-0.5 text-[11px] text-zinc-500">彙整要送往</p>
+              <Check
+                on={s.digest_to_line}
+                onChange={(v) => patch({ digest_to_line: v })}
+                label="LINE"
+                hint="每檔最多列幾個訊號見下方設定，省月額度"
+              />
+              <Check
+                on={s.digest_to_telegram}
+                onChange={(v) => patch({ digest_to_telegram: v })}
+                label="Telegram"
+                hint="訊號列完整清單，當當日紀錄"
+              />
+              {!s.digest_to_line && !s.digest_to_telegram && (
+                <p className="text-[11px] text-amber-500">
+                  ⚠️ 兩條都沒勾，定時推播不會送出任何訊息。
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <p className="mb-2 text-[11px] text-zinc-500">LINE 訊息格式</p>
+            <div className="flex flex-wrap items-start gap-x-6">
+              <div>
+                <Radio
+                  name="linefmt" value="text" current={s.line_message_format}
+                  onPick={(v) => patch({ line_message_format: v as 'text' | 'flex' })}
+                  label="純文字" recommended
+                  hint="超長自動分段（切在股票邊界），相容所有 LINE 版本"
+                />
+                <Radio
+                  name="linefmt" value="flex" current={s.line_message_format}
+                  onPick={(v) => patch({ line_message_format: v as 'text' | 'flex' })}
+                  label="Flex 卡片"
+                  hint="排版較好，但超過 40 檔會截斷（Flex 的區塊數與 50KB 上限）"
+                />
+              </div>
+              <label className="mt-1.5 text-xs text-zinc-400">
+                每檔最多訊號數
+                <input
+                  type="number" min={1} max={10}
+                  value={s.line_max_signals_per_stock}
+                  onChange={(e) =>
+                    patch({ line_max_signals_per_stock: Math.max(1, Number(e.target.value) || 2) })
+                  }
+                  className="ml-2 w-16 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-right font-mono tabular-nums text-zinc-100"
+                />
+                <span className="block text-[11px] text-zinc-600">
+                  取優先等級最高的前 N 個，其餘以 +N 帶過。只影響 LINE。
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <p className="mb-2 text-[11px] text-zinc-500">即時事件（只走 Telegram）</p>
+            <label className="text-xs text-zinc-400">
+              最低推播等級
+              <select
+                value={s.tg_event_min_priority}
+                onChange={(e) => patch({ tg_event_min_priority: Number(e.target.value) })}
+                className="ml-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100"
+              >
+                <option value={1}>1 · 全部（含預警，193 檔下會很吵）</option>
+                <option value={2}>2 · 瞬間反彈以上（建議）</option>
+                <option value={4}>4 · 瞬間拉抬以上</option>
+                <option value={6}>6 · 只有漲跌停相關</option>
+                <option value={8}>8 · 只有真的觸及漲停價</option>
+              </select>
+              <span className="block text-[11px] text-zinc-600">
+                對應 core/events.py 的 PRIORITY。跑馬燈不受這個值影響。
+              </span>
+            </label>
+          </div>
+
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <p className="mb-2 text-[11px] text-zinc-500">LINE 推送狀態</p>
+            <LinePanel />
+          </div>
         </Section>
 
         <Section title="⚙️ 推送節奏" hint="快線只推變動過的報價，慢線重算指標與訊號。兩者互不影響。">

@@ -68,10 +68,26 @@ __all__ = [
 # 訊號優先等級：數字越小越重要（1 > 2 > 3）。同一天同等級的訊號一起觸發就一起顯示；
 # 等級不同時只顯示等級數字最小（最重要）的那些。
 # key 對應 signal_module 各檔案 register_signal() 裡的 label。
+#
+# ⚠️ 這張表是 signal_module/priority.py 的複本，而且已經漂移了
+# ------------------------------------------------------------------
+# 真實來源是 priority.py 的 _LABEL_TO_PRIORITY（那邊還兼任舊 repo「訊號編輯」
+# 頁面的滑桿來源）。這裡當初複製了一份，之後 priority.py 新增的 label 沒有跟上：
+# 「進入買入區間」「觸及停損價格」在那邊是等級 1，在這裡卻不存在 → 落到預設 3。
+# 症狀跟手冊裡「漲幅達標」那個案例一樣：沒有錯誤訊息，只是等級悄悄不對。
+#
+# 這裡補上缺的那兩個，讓兩張表一致。
+#（「漲幅達標」在 priority.py 那邊同樣沒登記，兩邊都是預設 3，所以是一致的、
+#  不在這次改動範圍——那是手冊 P1 提到的既有問題。）
+# 真正的解法是直接吃 priority.py 的表
+# （import 後讀 signal_module.base.SIGNAL_PRIORITY），但那要連 module_loader
+# 的載入時序一起處理，不在這次改動範圍內——先讓值正確。
 SIGNAL_PRIORITY = {
     "布林縮窄突破": 1,
     "反向島狀": 1,
     "下降趨勢線突破": 1,
+    "進入買入區間": 1,       # ← 補上，原本落到預設 3
+    "觸及停損價格": 1,       # ← 補上，原本落到預設 3
     "3K反轉": 2,
     "巧妙點": 2,
     "雙跳空": 2,
@@ -184,6 +200,7 @@ def run_stock_signals(
     close_val: float,
     rise_threshold: float = 5.0,
     price_ref_date=None,
+    target_entry: dict | None = None,
 ):
     """
     對單一股票跑過全部已註冊訊號。
@@ -195,6 +212,17 @@ def run_stock_signals(
 
     任何一個訊號模組拋例外都只跳過該模組，不影響其他訊號——這是原版行為，
     對「使用者自己上傳的訊號檔」這種情境是必要的容錯。
+
+    ── target_entry：一個從搬家以來就靜默失效的訊號 ──
+    `signal_module/target_price.py` 註冊了兩個訊號（進入買入區間、觸及停損價格），
+    它們從 `ctx.params["target_price"]` 讀這檔的目標價設定。但這裡原本只傳
+    `{"rise_threshold": ...}`，所以那兩個訊號**每一次都走「未設定目標價」那條
+    early return，永遠 hit=False**——表格訊號欄看不到、Telegram 也推不到，
+    而且完全不報錯（因為 hit=False 是合法結果，不是例外）。
+
+    target_entry 就是 `target_price_list.json` 裡這一檔的那一筆
+    （由 server/hub.py 從已經載好的 target_table 取出來傳進來，不重讀檔案）。
+    傳 None 時行為與修改前完全相同。
     """
     try:
         df_ind = prepare_signal_dataframe(
@@ -205,9 +233,15 @@ def run_stock_signals(
         return [], "-"
 
     scan_date = df_ind.index[-1]
+    params: dict = {"rise_threshold": rise_threshold}
+    # 只有真的有這檔的目標價設定才放進去。放 None 進去不會出錯
+    # （target_price.py 的 _get_target_price_config 有 isinstance 檢查），
+    # 但留著會讓「有沒有設定」在除錯時分不出來。
+    if target_entry:
+        params["target_price"] = target_entry
     ctx = ModuleSignalContext(
         code=symbol, name=name, df=df_ind, scan_date=scan_date,
-        params={"rise_threshold": rise_threshold},
+        params=params,
     )
 
     hit_list = []

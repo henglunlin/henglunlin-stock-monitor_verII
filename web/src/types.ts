@@ -125,6 +125,23 @@ export interface FubonDebug {
   history?: ConnLogEntry[]
 }
 
+/** GET /api/debug/line。設定頁的「LINE 推送狀態」區塊吃這個 */
+export interface LineDebug {
+  configured: boolean
+  has_token: boolean
+  has_target: boolean
+  /** 收件對象的尾四碼。用來確認「是不是我以為的那個對象」 */
+  target_tail: string
+  at: string | null
+  ok: boolean | null
+  status: number | null
+  messages: number
+  /** 失敗原因。LINE 的狀態碼只說 400/401/429，真正原因在這裡 */
+  error: string | null
+  /** 目前定時彙整實際會送到哪些管道（兩層閘門都算進去了） */
+  digest_targets: { telegram: boolean; line: boolean }
+}
+
 export interface Settings {
   realtime_source: string
   history_source: string
@@ -137,9 +154,20 @@ export interface Settings {
   row_refresh_sec: number
   /** 偵測線：盤中事件掃描間隔（毫秒） */
   detector_interval_ms: number
+  /** Toolbar 的兩顆總開關。關掉該管道就一則都不發 */
   tg_push_enabled: boolean
+  line_push_enabled: boolean
   scheduled_push_enabled: boolean
-  /** 盤中事件要推 Telegram 的最低優先權 */
+  /** 定時推播時段，格式 "HH:MM" */
+  push_slots: string[]
+  /** 定時彙整要送哪些管道（下層閘門，還要看上面兩顆總開關） */
+  digest_to_telegram: boolean
+  digest_to_line: boolean
+  /** LINE 訊息格式。'text' = 純文字（預設）、'flex' = 卡片 */
+  line_message_format: 'text' | 'flex'
+  /** LINE 每檔最多列幾個訊號（省月額度）。Telegram 不受限 */
+  line_max_signals_per_stock: number
+  /** 盤中事件要推 Telegram 的最低優先權。即時事件刻意不走 LINE */
   tg_event_min_priority: number
   sync_groups_to_github: boolean
   /** 儀表板／表格的顯示門檻 */

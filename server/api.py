@@ -21,7 +21,7 @@ import logging
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from core import config, groups as core_groups, targets
+from core import config, groups as core_groups, line as core_line, notify, targets
 from core.cache import all_cache_info, clear_all_caches
 from core.state import get_state
 from server.hub import hub
@@ -69,7 +69,13 @@ class SettingsPatch(BaseModel):
     row_refresh_sec: int | None = None
     detector_interval_ms: int | None = None
     tg_push_enabled: bool | None = None
+    line_push_enabled: bool | None = None
     scheduled_push_enabled: bool | None = None
+    push_slots: list[str] | None = None
+    digest_to_telegram: bool | None = None
+    digest_to_line: bool | None = None
+    line_message_format: str | None = None
+    line_max_signals_per_stock: int | None = None
     tg_event_min_priority: int | None = None
     sync_groups_to_github: bool | None = None
     rise_threshold: float | None = None
@@ -680,3 +686,40 @@ async def admin_reset_daily():
     """手動重置當日狀態（當日高低、推播去重）。正常情況會自動換日重置。"""
     get_state().reset_daily()
     return {"ok": True}
+
+
+# =============================================================================
+# 推播
+# =============================================================================
+@router.get("/debug/line", dependencies=auth)
+async def debug_line():
+    """
+    LINE 推播診斷。設定頁的「LINE 推送狀態」區塊吃這個。
+
+    這一組欄位是照著「真實查不出原因的事故」設計的：LINE 推播失敗時，
+    HTTP 狀態碼只告訴你 400/401/429，真正的原因在 body 裡
+    （token 過期？對象 id 錯？月額度用盡？）。所以 error 欄位一定要留著。
+
+    ⚠️ 不回傳 token 本身，只回「有沒有設」與收件對象的尾四碼。
+    """
+    return {
+        **core_line.last_status(),
+        "digest_targets": notify.digest_targets(),
+    }
+
+
+class NotifyTestRequest(BaseModel):
+    channel: str = Field("line", description='"line" | "telegram"')
+
+
+@router.post("/notify/test", dependencies=auth)
+async def notify_test(req: NotifyTestRequest):
+    """
+    發一則測試訊息。走的是與正式推播完全相同的函式，所以測試通過就代表
+    正式推播會通。
+
+    ⚠️ 這是同步的 requests 呼叫（約 1 秒），但刻意**不丟 executor**：
+    它只在你按按鈕時跑一次，不是迴圈。api.py 裡真正需要丟 executor 的是
+    debug_signals 與 debug_github 那兩支（會卡住 event loop 幾十秒）。
+    """
+    return notify.push_test(req.channel)

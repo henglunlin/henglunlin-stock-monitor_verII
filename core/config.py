@@ -16,6 +16,8 @@ Secret Files，本機開發就是 .env。
     FUBON_PFX_BASE64=MIIK...            # 原本放在 st.secrets["fubon"]["pfx_base64"]
     TELEGRAM_BOT_TOKEN=123456:ABC...
     TELEGRAM_CHAT_ID=-1001234567890
+    LINE_CHANNEL_ACCESS_TOKEN=xxxxx      # LINE Developers → Messaging API 長期權杖
+    LINE_TO=Uxxxxxxxxxxxxxxxx            # 你的 userId，或群組 groupId
     GITHUB_TOKEN=github_pat_xxx
     GITHUB_OWNER=henglunlin
     GITHUB_REPO=henglunlin-stock-monitor-FUBAN
@@ -32,6 +34,7 @@ __all__ = [
     "get_secret_or_default", "get_bool", "get_int", "get_list",
     "FubonCredentials", "fubon_credentials", "github_repo_config",
     "scanner_repo_config", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+    "LINE_CHANNEL_ACCESS_TOKEN", "LINE_TO",
     "APP_SHARED_TOKEN", "ALLOWED_ORIGINS", "REPO_ROOT",
 ]
 
@@ -178,6 +181,18 @@ def scanner_repo_config() -> dict:
 # =============================================================================
 TELEGRAM_BOT_TOKEN = get_secret_or_default("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = get_secret_or_default("TELEGRAM_CHAT_ID", "")
+
+# LINE Messaging API（定時彙整推播走這條；即時事件仍走 Telegram）
+#
+# ⚠️ 不要用 LINE Notify —— 它已於 2025-03-31 終止服務。
+# 取得方式：LINE Developers Console → 建一個 Messaging API channel →
+#   LINE_CHANNEL_ACCESS_TOKEN：Messaging API 分頁最下面的「長期存取權杖」
+#   LINE_TO：你自己的 userId（把 bot 加好友後由 webhook 取得），或群組的 groupId
+#
+# 跟 Telegram 一樣走 get_secret_or_default（不清引號）——權杖是長字串，
+# 萬一值不小心帶了引號會變成 401，這時去看 /api/debug/line 的 error 欄。
+LINE_CHANNEL_ACCESS_TOKEN = get_secret_or_default("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_TO = get_secret_or_default("LINE_TO", "")
 
 # 前端必須在 header 帶這個 token 才拿得到資料。Render 的網址是公開的，
 # 加上自動登入富邦之後，沒有這道防線等於把持股攤在網路上。
