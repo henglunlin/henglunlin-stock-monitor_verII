@@ -38,6 +38,9 @@ LINE Notify 已於 2025-03-31 正式終止服務，權杖不再發放也不再�
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import threading
 from datetime import datetime
@@ -52,9 +55,11 @@ log = logging.getLogger(__name__)
 __all__ = [
     "line_configured", "send_text", "send_flex",
     "split_text", "last_status", "TEXT_LIMIT",
+    "webhook_configured", "verify_signature", "extract_commands", "reply_text",
 ]
 
 API_PUSH = "https://api.line.me/v2/bot/message/push"
+API_REPLY = "https://api.line.me/v2/bot/message/reply"
 
 # 單則 text 的實際上限是 5000，留 500 字安全邊際（emoji 在 LINE 這邊算 1 字元，
 # 但我們的訊息含全形空白與換行，寧可保守）。
@@ -84,6 +89,9 @@ def last_status() -> dict:
             "configured": line_configured(),
             "has_token": bool(config.LINE_CHANNEL_ACCESS_TOKEN),
             "has_target": bool(config.LINE_TO),
+            # webhook 是獨立的一件事：沒設 channel secret 只是不能從 LINE 下指令，
+            # 不影響推播。分開顯示才不會讓人以為推播壞了。
+            "webhook_ready": webhook_configured(),
             # 只露出尾四碼，足夠確認「是不是我以為的那個對象」又不洩漏 id
             "target_tail": (config.LINE_TO or "")[-4:],
             **_LAST,
@@ -186,6 +194,94 @@ def send_text(text: str) -> bool:
             ok = False
             break                   # 失敗就停，不要把額度浪費在後續段落上
     return ok
+
+
+# =============================================================================
+# Webhook（收 LINE 傳進來的指令）
+# =============================================================================
+def webhook_configured() -> bool:
+    """沒有 channel secret 就沒辦法驗簽，webhook 一律拒收。"""
+    return bool(config.LINE_CHANNEL_SECRET)
+
+
+def verify_signature(body: bytes, signature: str) -> bool:
+    """
+    驗證 LINE 的 `X-Line-Signature`：base64(HMAC-SHA256(channel_secret, 原始 body))。
+
+    ⚠️ 三個必須做對、做錯就等於沒驗的地方
+    ------------------------------------
+    1. **一定要用原始 bytes**。不能先 json.loads 再 dumps 回去——鍵的順序、空白、
+       Unicode 跳脫任何一點不同，算出來的 HMAC 就不一樣。所以 api.py 那邊用
+       `await request.body()` 拿原始 body，不用 Pydantic model 解析。
+    2. **用 compare_digest 比對**，不要用 `==`。字串比對會在第一個不同的字元就
+       回傳，時間差可以被用來一個字元一個字元猜出正確簽章。
+    3. **密鑰沒設就回 False（fail closed）**。這是全服務唯一不需要 X-App-Token
+       的寫入端點，驗簽是它唯一的門鎖；沒鎖就不要開門。
+    """
+    if not webhook_configured() or not signature:
+        return False
+    try:
+        digest = hmac.new(
+            config.LINE_CHANNEL_SECRET.encode("utf-8"), body, hashlib.sha256,
+        ).digest()
+        expected = base64.b64encode(digest).decode("utf-8")
+    except Exception as e:
+        log.warning("LINE 簽章計算失敗：%s", e)
+        return False
+    return hmac.compare_digest(expected, signature)
+
+
+def extract_commands(payload: dict) -> list[tuple[str, str]]:
+    """
+    從 webhook 的 payload 抽出「使用者傳來的文字指令」。
+
+    回傳 [(小寫去空白的文字, reply_token), ...]。
+
+    LINE 會送進來各種事件（follow / unfollow / join / postback / sticker…），
+    這裡只挑 `message` 且 `type == "text"` 的，其餘安靜忽略。
+
+    ⚠️ 在 LINE Developers 按「Verify」時送進來的是一包**沒有 events 的**請求，
+    所以這裡對空 payload 必須正常回空清單，不能拋例外——否則驗證會顯示失敗。
+    """
+    out: list[tuple[str, str]] = []
+    for ev in (payload or {}).get("events") or []:
+        if not isinstance(ev, dict) or ev.get("type") != "message":
+            continue
+        msg = ev.get("message") or {}
+        if msg.get("type") != "text":
+            continue
+        text = str(msg.get("text", "")).strip().lower()
+        if text:
+            out.append((text, ev.get("replyToken") or ""))
+    return out
+
+
+def reply_text(reply_token: str, text: str) -> bool:
+    """
+    用 reply token 回一則文字。
+
+    為什麼盡量用 reply 而不是 push：**回覆訊息不計入每月 200 則的免費額度**，
+    push 才計。指令的「收到了」這種確認訊息用 reply 發，等於不花錢。
+
+    代價是 reply token 只能用一次，而且很快就過期，所以它只適合「馬上回」的
+    確認訊息；掃描結果那種要跑一下才有的內容仍然走 push。
+    """
+    if not reply_token or not config.LINE_CHANNEL_ACCESS_TOKEN:
+        return False
+    headers = {
+        "Authorization": f"Bearer {config.LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {"replyToken": reply_token, "messages": [{"type": "text", "text": text[:4900]}]}
+    try:
+        res = requests.post(API_REPLY, json=payload, headers=headers, timeout=5)
+    except Exception as e:
+        log.warning("LINE 回覆失敗（已忽略）：%s", e)
+        return False
+    if res.status_code != 200:
+        log.warning("LINE 回覆失敗 %s：%s", res.status_code, (res.text or "")[:200])
+        return False
+    return True
 
 
 def send_flex(alt_text: str, contents: dict[str, Any]) -> bool:

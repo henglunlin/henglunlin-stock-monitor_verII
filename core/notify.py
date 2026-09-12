@@ -41,7 +41,7 @@ from core.state import TW_TZ, get_state
 
 log = logging.getLogger(__name__)
 
-__all__ = ["push_digest", "push_test", "digest_targets", "sorted_labels"]
+__all__ = ["push_digest", "push_text", "push_test", "digest_targets", "sorted_labels"]
 
 
 # =============================================================================
@@ -243,6 +243,35 @@ def push_digest(
         "彙整推播 %d 檔 · slot=%s · TG=%s · LINE=%s",
         len(entries), slot or "-", result["telegram"], result["line"],
     )
+    return result
+
+
+def push_text(text: str, *, channels: dict | None = None) -> dict:
+    """
+    發一則純通知（不是彙整）。給「掃完沒有命中」這種狀態訊息用。
+
+    存在的理由：原本 `_push_signals` 遇到空清單是直接 return，什麼都不發。
+    排程觸發時那樣是對的（沒訊號本來就不該吵你），但**手動下指令時那樣很糟**——
+    你分不出來是「跑完沒東西」還是「根本沒跑」。盤後測試幾乎一定是空的，
+    所以手動觸發一定要有回音。
+
+    Telegram 吃 HTML，LINE 吃純文字，所以這裡讓呼叫端給同一段純文字，
+    Telegram 那份自己包一層 <b>。
+    """
+    want = channels if channels is not None else digest_targets()
+    result: dict = {"telegram": None, "line": None}
+    if want.get("telegram"):
+        try:
+            result["telegram"] = telegram.send_message(f"<b>{text}</b>")
+        except Exception as e:
+            log.warning("Telegram 通知失敗（已忽略）：%s", e)
+            result["telegram"] = False
+    if want.get("line"):
+        try:
+            result["line"] = line.send_text(text)
+        except Exception as e:
+            log.warning("LINE 通知失敗（已忽略）：%s", e)
+            result["line"] = False
     return result
 
 

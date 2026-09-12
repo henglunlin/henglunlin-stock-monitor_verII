@@ -221,6 +221,15 @@ function LinePanel() {
         </p>
       )}
 
+      {data?.configured && !data.webhook_ready && (
+        <p className="mb-2 text-[11px] leading-relaxed text-zinc-500">
+          推播正常。若還想從 LINE 傳 <code className="font-mono">push</code> 指令，要再設{' '}
+          <code className="font-mono">LINE_CHANNEL_SECRET</code>（Basic settings 的 Channel secret）
+          並在 LINE Developers 把 Webhook URL 指到{' '}
+          <code className="font-mono">/api/line/webhook</code>。沒設只是不能下指令，不影響定時推播。
+        </p>
+      )}
+
       {testMsg && <p className="mb-2 text-[11px] text-zinc-300">{testMsg}</p>}
 
       {data && (

@@ -32,13 +32,14 @@ import logging
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
 
 from core import groups as core_groups
-from core import notify, quotes, targets, telegram
+from core import line, notify, quotes, targets, telegram
 from core.detectors import get_detector_engine
 from core.events import get_event_bus
 from core import fugle_patch
@@ -706,10 +707,16 @@ class QuoteHub:
                             break
 
                 if should_push:
-                    # 強制推播只回 Telegram；排程推播照設定分派
+                    # 強制推播只回 Telegram；排程推播照設定分派。
+                    # on_empty 也只給強制推播：排程掃完沒東西是常態，不該吵你；
+                    # 但手動下指令一定要有回音，否則分不出「沒命中」與「沒跑」。
                     channels = {"telegram": True, "line": False} if forced else None
+                    on_empty = "🤖 本次掃描沒有命中任何訊號。" if forced else None
                     await self._loop.run_in_executor(
-                        None, self._push_signals, slot_label, channels,
+                        None,
+                        partial(
+                            self._push_signals, slot_label, channels, on_empty=on_empty,
+                        ),
                     )
 
                 await asyncio.sleep(20)
@@ -769,12 +776,77 @@ class QuoteHub:
             })
         return entries
 
-    def _push_signals(self, slot: str | None = None, channels: dict | None = None) -> None:
-        """收集 → 分派。在背景執行緒跑（requests 是同步的）。"""
+    def _push_signals(
+        self,
+        slot: str | None = None,
+        channels: dict | None = None,
+        *,
+        on_empty: str | None = None,
+    ) -> None:
+        """
+        收集 → 分派。在背景執行緒跑（requests 是同步的）。
+
+        on_empty：掃完沒有任何命中時要發的訊息。排程觸發不給（沒訊號本來就不該吵你），
+        手動下指令一定要給——否則你分不出「跑完沒東西」與「根本沒跑」，
+        而盤後測試幾乎一定是空的。
+        """
         entries = self._collect_digest_entries()
         if not entries:
+            if on_empty:
+                notify.push_text(on_empty, channels=channels)
             return
         notify.push_digest(entries, slot, channels=channels)
+
+    # ------------------------------------------------------------------
+    # 從 LINE 來的指令
+    # ------------------------------------------------------------------
+    def trigger_line_push(self, reply_token: str = "") -> None:
+        """
+        LINE webhook 收到 `push` 時呼叫。**必須立刻回來，不能等掃描跑完。**
+
+        LINE 對 webhook 的回應有逾時限制，超過就判定失敗（而且 Render 免費方案
+        冷啟動本來就已經吃掉大半時間）。所以這裡只把工作丟進執行緒池就返回，
+        端點那邊馬上回 200。
+
+        刻意不 await 這個 future：要的就是 fire-and-forget。但沒人收 future 的
+        例外會變成 asyncio 的「exception was never retrieved」警告而且看不到堆疊，
+        所以掛一個 callback 把它撈出來記進 log。
+        """
+        if self._loop is None:
+            log.warning("LINE 指令進來時 hub 尚未啟動，忽略")
+            return
+        fut = self._loop.run_in_executor(None, self._line_forced_push, reply_token)
+        fut.add_done_callback(
+            lambda f: f.exception() and log.exception(
+                "LINE 強制推播失敗：%s", f.exception(),
+            )
+        )
+
+    def _line_forced_push(self, reply_token: str = "") -> None:
+        """
+        LINE 版的強制推播。跟 Telegram 的 `push` 指令對稱：
+        **你在哪下指令就在哪收回覆**，所以這一則只走 LINE。
+
+        「收到指令」那句用 reply token 發（回覆訊息不計入每月 200 則額度），
+        掃描結果走 push（那是要跑一下才有的內容，reply token 撐不到）。
+        """
+        state = get_state()
+        s = state.settings
+
+        if not s.line_push_enabled:
+            # 開關關著就不推，但要讓下指令的人知道為什麼，否則看起來像壞掉
+            line.reply_text(reply_token, "⚠️ LINE 推送目前是關閉的，請到網頁的工具列打開。")
+            return
+        if not line.line_configured():
+            log.warning("收到 LINE 指令，但 LINE 尚未設定完成")
+            return
+
+        line.reply_text(reply_token, "🤖 收到指令，開始掃描…")
+        state.clear_notified()
+        self._push_signals(
+            channels={"telegram": False, "line": True},
+            on_empty="🤖 本次掃描沒有命中任何訊號。",
+        )
 
 
 hub = QuoteHub()

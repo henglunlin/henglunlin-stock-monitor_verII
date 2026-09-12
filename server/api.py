@@ -16,9 +16,10 @@ APP_SHARED_TOKEN 沒設定時（本機開發）驗證會自動放行，方便你
 """
 from __future__ import annotations
 
+import json
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core import config, groups as core_groups, line as core_line, notify, targets
@@ -706,6 +707,59 @@ async def debug_line():
         **core_line.last_status(),
         "digest_targets": notify.digest_targets(),
     }
+
+
+@router.post("/line/webhook")
+async def line_webhook(request: Request):
+    """
+    LINE 傳指令進來的入口。目前只認得 `push`（強制掃描並推播，只回 LINE）。
+
+    ⚠️ 這是全服務唯一不需要 X-App-Token 的寫入端點
+    ---------------------------------------------
+    LINE 的伺服器沒辦法帶自訂 header，所以它的身分驗證完全靠
+    `X-Line-Signature`（用 channel secret 算的 HMAC-SHA256）。
+    密鑰沒設時 `verify_signature()` 一律回 False，整個端點等於關閉——
+    這是刻意的 fail closed，不要改成「沒設就放行」。
+
+    ⚠️ 三件跟 LINE 規格有關、做錯就查很久的事
+    ----------------------------------------
+    1. **用原始 bytes 驗簽**，所以這裡收 `Request` 而不是 Pydantic model。
+       先解析再序列化回去，鍵順序或空白差一點簽章就對不上。
+    2. **一律回 200**，連「我不認得這個事件」也是。LINE 對非 200 會把這個
+       webhook 標記成失敗，累積多了會自動停用；而且在 Console 按「Verify」
+       送進來的是一包**沒有 events 的**請求，那個也必須回 200。
+    3. **不能等掃描跑完**。LINE 對回應有逾時限制，所以這裡只把工作丟給
+       `hub.trigger_line_push()`（fire-and-forget 到執行緒池）就馬上返回。
+    """
+    raw = await request.body()
+    signature = request.headers.get("X-Line-Signature", "")
+
+    if not core_line.verify_signature(raw, signature):
+        # 401/403 對 LINE 來說都算失敗，但這裡確實該擋——能走到這裡代表
+        # 不是 LINE 發的（或密鑰設錯），不是我們該吞下去的請求。
+        log.warning("LINE webhook 簽章驗證失敗，已拒絕")
+        raise HTTPException(status_code=403, detail="簽章不符")
+
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception as e:
+        log.warning("LINE webhook payload 解析失敗（已忽略）：%s", e)
+        return {"ok": True}
+
+    handled = []
+    for text, reply_token in core_line.extract_commands(payload):
+        if text == "push":
+            hub.trigger_line_push(reply_token)
+            handled.append(text)
+        else:
+            # 不認得的指令就回一句，免得你以為機器人死了。
+            # 用 reply（不計入每月 200 則額度），不用 push。
+            core_line.reply_text(
+                reply_token,
+                f"我看不懂「{text}」。目前只認得：push（立刻掃描並推播）",
+            )
+
+    return {"ok": True, "handled": handled}
 
 
 class NotifyTestRequest(BaseModel):

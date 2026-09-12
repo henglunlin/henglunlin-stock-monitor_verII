@@ -18,6 +18,7 @@ Secret Files，本機開發就是 .env。
     TELEGRAM_CHAT_ID=-1001234567890
     LINE_CHANNEL_ACCESS_TOKEN=xxxxx      # LINE Developers → Messaging API 長期權杖
     LINE_TO=Uxxxxxxxxxxxxxxxx            # 你的 userId，或群組 groupId
+    LINE_CHANNEL_SECRET=xxxxx            # Basic settings 的 Channel secret（webhook 驗簽）
     GITHUB_TOKEN=github_pat_xxx
     GITHUB_OWNER=henglunlin
     GITHUB_REPO=henglunlin-stock-monitor-FUBAN
@@ -34,7 +35,7 @@ __all__ = [
     "get_secret_or_default", "get_bool", "get_int", "get_list",
     "FubonCredentials", "fubon_credentials", "github_repo_config",
     "scanner_repo_config", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-    "LINE_CHANNEL_ACCESS_TOKEN", "LINE_TO",
+    "LINE_CHANNEL_ACCESS_TOKEN", "LINE_TO", "LINE_CHANNEL_SECRET",
     "APP_SHARED_TOKEN", "ALLOWED_ORIGINS", "REPO_ROOT",
 ]
 
@@ -193,6 +194,14 @@ TELEGRAM_CHAT_ID = get_secret_or_default("TELEGRAM_CHAT_ID", "")
 # 萬一值不小心帶了引號會變成 401，這時去看 /api/debug/line 的 error 欄。
 LINE_CHANNEL_ACCESS_TOKEN = get_secret_or_default("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_TO = get_secret_or_default("LINE_TO", "")
+
+# LINE 的 webhook 簽章密鑰（Basic settings 分頁的 Channel secret，**不是**上面那個
+# access token，兩個長得很像但用途完全不同）。
+#
+# ⚠️ 沒設定時 webhook 一律拒收（fail closed）。/api/line/webhook 是全服務唯一
+# 不需要 X-App-Token 的寫入端點——LINE 的伺服器沒辦法帶自訂 header——所以它的
+# 身分驗證完全靠這個密鑰算出來的 HMAC。密鑰沒設就等於門沒鎖，寧可不收。
+LINE_CHANNEL_SECRET = get_secret_or_default("LINE_CHANNEL_SECRET", "")
 
 # 前端必須在 header 帶這個 token 才拿得到資料。Render 的網址是公開的，
 # 加上自動登入富邦之後，沒有這道防線等於把持股攤在網路上。
