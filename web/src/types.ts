@@ -143,6 +143,11 @@ export interface LineDebug {
   configured: boolean
   has_token: boolean
   has_target: boolean
+  /**
+   * webhook 是獨立的一件事：沒設 channel secret 只是不能從 LINE 下 push 指令，
+   * 不影響定時彙整推播——對應後端 core/line.py 的 webhook_configured()。
+   */
+  webhook_ready: boolean
   /** 收件對象的尾四碼。用來確認「是不是我以為的那個對象」 */
   target_tail: string
   at: string | null
