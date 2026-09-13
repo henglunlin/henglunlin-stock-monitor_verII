@@ -124,6 +124,9 @@ class Settings:
     tg_event_min_priority: int = 2
     # 分組存檔時是否同步推回 GitHub
     sync_groups_to_github: bool = True
+    # 目標價設定存檔時是否同步推回 GitHub（跟分組同一個理由：Render 免費方案
+    # 沒有持久磁碟，不推 GitHub 的話重新部署就會還原成 repo 裡的舊版本）
+    sync_target_price_to_github: bool = True
 
     # ── 兩個門檻，刻意分開 ──
     # 原本只有一個 rise_threshold，同時被「儀表板要不要算達標」和「漲幅達標訊號要不要

@@ -60,6 +60,14 @@ class GroupsRequest(BaseModel):
     groups: dict = Field(..., description="{分組名稱: [股票代碼, ...]}")
 
 
+class TargetsRequest(BaseModel):
+    targets: dict = Field(
+        ...,
+        description='{"2330.TW": {"target_price": 2200, "low_pct": 5, "high_pct": 5, '
+                    '"stop_loss": 2000, "enabled": true}, ...}',
+    )
+
+
 class SettingsPatch(BaseModel):
     realtime_source: str | None = None
     history_source: str | None = None
@@ -79,6 +87,7 @@ class SettingsPatch(BaseModel):
     line_max_signals_per_stock: int | None = None
     tg_event_min_priority: int | None = None
     sync_groups_to_github: bool | None = None
+    sync_target_price_to_github: bool | None = None
     rise_threshold: float | None = None
     signal_rise_threshold: float | None = None
     dashboard_hot_ratio: float | None = None
@@ -288,6 +297,46 @@ async def refresh_rows():
 @router.get("/targets", dependencies=auth)
 async def read_targets():
     return {"targets": targets.load_target_price_list()}
+
+
+@router.put("/targets", dependencies=auth)
+async def write_targets(req: TargetsRequest):
+    """
+    存檔並（依設定）同步回 GitHub。跟 /api/groups 的寫入端點同一套邏輯：
+    先驗證、存檔前留一份備份快照，再由 core.targets.persist_target_price_list()
+    決定要不要推 GitHub。
+
+    ⚠️ target_price 沒填或 <= 0 的股票，驗證時會被直接跳過（不報錯，
+    也不會出現在回傳的 targets 裡）——前端應該在送出前自己攔一次，
+    避免使用者以為存進去了，其實那一筆被安靜濾掉。
+    """
+    try:
+        normalized = targets.validate_and_normalize_target_price_json(req.targets)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        targets.save_backup_snapshot(targets.load_target_price_list())
+    except Exception as e:
+        log.warning("目標價備份快照失敗（不影響存檔）：%s", e)
+
+    result = targets.persist_target_price_list(normalized)
+    return {
+        "ok": result.ok,
+        "message": result.message,
+        "pushed": result.pushed,
+        "targets": normalized,
+    }
+
+
+@router.post("/targets/reload-from-github", dependencies=auth)
+async def reload_targets_from_github():
+    try:
+        fetched = targets.fetch_target_price_list_from_github()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"從 GitHub 讀取失敗：{e}")
+    targets.save_target_price_list(fetched)
+    return {"ok": True, "targets": fetched}
 
 
 # =============================================================================

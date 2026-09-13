@@ -165,6 +165,12 @@ export function Toolbar({ onRefresh }: { onRefresh: () => Promise<void> }) {
           🛠️ 分類編輯
         </button>
         <button
+          onClick={() => openModal({ kind: 'targets' })}
+          className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
+        >
+          🎯 目標價編輯
+        </button>
+        <button
           onClick={() => openModal({ kind: 'settings' })}
           className="rounded border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
         >
