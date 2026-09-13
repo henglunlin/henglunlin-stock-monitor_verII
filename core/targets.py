@@ -34,8 +34,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
+from datetime import datetime
+
+import requests
 
 from core import config
+from core import groups as core_groups
+from core.state import TW_TZ, get_state
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +58,14 @@ except Exception:  # pragma: no cover
 __all__ = [
     "load_target_price_list", "validate_and_normalize_target_price_json",
     "save_target_price_list", "compute_buy_zone", "format_target_price",
-    "evaluate_target_price",
+    "evaluate_target_price", "TargetSyncResult", "persist_target_price_list",
+    "save_backup_snapshot", "fetch_target_price_list_from_github",
+    "upload_target_price_list_to_github",
 ]
+
+# 目標價編輯頁的存檔備份目錄。跟 core/groups.py 的 BACKUP_DIR 分開放，
+# 避免兩種完全不同性質的快照混在同一個資料夾裡。
+BACKUP_DIR = str(config.REPO_ROOT / "target_price_backups")
 
 
 def _to_bool(value, default: bool = True) -> bool:
@@ -216,3 +228,89 @@ def _position_on_scale(price, stop_loss, low, high):
     if hi <= lo:
         return None
     return round(min(max((price - lo) / (hi - lo), 0.0), 1.0), 4)
+
+
+# =============================================================================
+# 目標價編輯器：備份與 GitHub 同步
+# =============================================================================
+# 沿用 core/groups.py 已經寫好的 SyncResult 概念，但欄位精簡一層——目標價只推
+# 這個監控 app 自己的 repo，不像 stock_groups.json 還要同時推掃描器 repo，
+# 所以不需要 pushed_scanner 那個欄位。
+@dataclass
+class TargetSyncResult:
+    saved_local: bool = False
+    pushed: bool = False
+    attempted_push: bool = False
+    message: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.saved_local and (not self.attempted_push or self.pushed)
+
+
+def _ensure_backup_dir() -> None:
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def save_backup_snapshot(data: dict) -> str:
+    _ensure_backup_dir()
+    filename = f"target_price_list_{datetime.now(TW_TZ).strftime('%Y%m%d_%H%M%S')}.json"
+    file_path = os.path.join(BACKUP_DIR, filename)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return file_path
+
+
+def fetch_target_price_list_from_github() -> dict:
+    """從 raw.githubusercontent.com 讀最新版 target_price_list.json（公開 repo 免 token）。"""
+    cfg = config.github_repo_config()
+    url = (
+        f"https://raw.githubusercontent.com/{cfg['owner']}/{cfg['repo']}"
+        f"/{cfg['branch']}/target_price_list.json"
+    )
+    res = requests.get(url, timeout=15)
+    res.raise_for_status()
+    return validate_and_normalize_target_price_json(res.json())
+
+
+def upload_target_price_list_to_github(
+    data: dict,
+    commit_message: str = "Update target_price_list.json via monitor app",
+) -> tuple:
+    """
+    只推這個監控 app 自己的 repo——target_price_list.json 跟 stock_groups.json
+    不一樣，不需要讓掃描器那邊也讀到。實際的 HTTP 呼叫直接借用
+    core/groups.py 的 upload_file_to_repo()，不重寫一份一樣的錯誤處理邏輯。
+    """
+    content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    return core_groups.upload_file_to_repo(
+        content, "target_price_list.json", commit_message, config.github_repo_config()
+    )
+
+
+def persist_target_price_list(data: dict) -> TargetSyncResult:
+    """
+    存檔的統一入口：先存本機，再依設定決定要不要推 GitHub。跟
+    core/groups.py 的 persist_groups() 是同一套邏輯，理由也相同——
+    Render 免費方案沒有持久磁碟，本機檔案重新部署就會還原成 repo 裡的版本。
+    """
+    result = TargetSyncResult()
+    result.saved_local = save_target_price_list(data)
+
+    state = get_state()
+    if not state.settings.sync_target_price_to_github:
+        result.message = "已存檔（未啟用 GitHub 同步）" if result.saved_local else "本機存檔失敗"
+        return result
+
+    if not config.github_repo_config().get("token"):
+        result.message = (
+            "已存檔到本機。GitHub 同步已啟用但找不到 GITHUB_TOKEN，這次略過同步"
+            "——注意 Render 免費方案沒有持久磁碟，重新部署後目標價設定會還原成 repo 裡那份。"
+        )
+        return result
+
+    result.attempted_push = True
+    ok, why = upload_target_price_list_to_github(data)
+    result.pushed = ok
+    result.message = "已同步更新到 GitHub 的 target_price_list.json。" if ok else f"同步 GitHub 失敗 → {why}"
+    return result

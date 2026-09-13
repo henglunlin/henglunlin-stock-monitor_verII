@@ -67,6 +67,8 @@ export type ModalKind =
   | { kind: 'login' }
   /** 股票分類編輯器 */
   | { kind: 'groups' }
+  /** 目標價編輯器 */
+  | { kind: 'targets' }
   /** 完整事件流面板 */
   | { kind: 'events' }
 

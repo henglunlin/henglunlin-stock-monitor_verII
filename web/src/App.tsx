@@ -33,6 +33,7 @@ import { Modal } from './components/Modal'
 import { Marquee } from './components/Marquee'
 import { EventStreamPanel } from './components/EventStreamPanel'
 import { GroupEditor } from './components/GroupEditor'
+import { TargetEditor } from './components/TargetEditor'
 import { SettingsDialog } from './components/SettingsDialog'
 import { StockDetail } from './components/StockDetail'
 import { LoginDialog } from './components/LoginDialog'
@@ -179,6 +180,7 @@ export default function App() {
 
       <EventStreamPanel open={modal.kind === 'events'} onClose={closeModal} />
       <GroupEditor open={modal.kind === 'groups'} onClose={closeModal} />
+      <TargetEditor open={modal.kind === 'targets'} onClose={closeModal} />
       <SettingsDialog open={modal.kind === 'settings'} onClose={closeModal} />
       <LoginDialog open={modal.kind === 'login'} onClose={closeModal} onSuccess={refreshStatus} />
     </div>

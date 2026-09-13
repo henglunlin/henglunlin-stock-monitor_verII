@@ -9,7 +9,7 @@
  */
 import type {
   DetectorDebug, FubonDebug, GithubDebug, IntradaySeries, LineDebug, MarketEvent, Row,
-  Settings, Status, SymbolHit, TaiexSnapshot, WsDebug,
+  Settings, Status, SymbolHit, TaiexSnapshot, TargetEntry, WsDebug,
 } from '../types'
 
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
@@ -110,6 +110,16 @@ export const api = {
   reloadGroupsFromGithub: () =>
     request<{ ok: boolean; groups: Record<string, string[]> }>(
       '/api/groups/reload-from-github', { method: 'POST' },
+    ),
+
+  targets: () => request<{ targets: Record<string, TargetEntry> }>('/api/targets'),
+  saveTargets: (targets: Record<string, TargetEntry>) =>
+    request<{ ok: boolean; message: string; pushed: boolean; targets: Record<string, TargetEntry> }>(
+      '/api/targets', { method: 'PUT', body: JSON.stringify({ targets }) },
+    ),
+  reloadTargetsFromGithub: () =>
+    request<{ ok: boolean; targets: Record<string, TargetEntry> }>(
+      '/api/targets/reload-from-github', { method: 'POST' },
     ),
 }
 

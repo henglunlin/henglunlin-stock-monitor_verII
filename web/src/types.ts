@@ -31,6 +31,19 @@ export interface TargetInfo {
   position: number | null
 }
 
+/**
+ * 目標價設定的「原始輸入」欄位（買入區間 + 停損），存在 target_price_list.json。
+ * 跟 TargetInfo 不同：這是使用者在「🎯 目標價編輯」畫面填的原始值，
+ * 買入區間的絕對值一律由後端 compute_buy_zone() 現算，不存在這裡。
+ */
+export interface TargetEntry {
+  target_price: number
+  low_pct: number
+  high_pct: number
+  stop_loss: number | null
+  enabled: boolean
+}
+
 /** 監控表格的一列 */
 export interface Row {
   symbol: string
@@ -170,6 +183,7 @@ export interface Settings {
   /** 盤中事件要推 Telegram 的最低優先權。即時事件刻意不走 LINE */
   tg_event_min_priority: number
   sync_groups_to_github: boolean
+  sync_target_price_to_github: boolean
   /** 儀表板／表格的顯示門檻 */
   rise_threshold: number
   /** 訊號引擎的門檻。刻意跟上面分開：UI 歸 UI、訊號歸訊號 */
