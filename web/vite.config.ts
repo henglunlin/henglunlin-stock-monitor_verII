@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // 開發時：Vite dev server 在 5173，後端在 8000，是跨來源。
 // 這裡設 proxy 讓 /api 與 /ws 都轉發到後端，開發時就不會踩到 CORS；
@@ -26,7 +27,35 @@ export default defineConfig(({ mode }) => {
   const wsBackend = backend.replace(/^http/, 'ws')
 
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      // 手機版的 PWA 支援（Round 3 定案：用套件而不是手刻 manifest + service worker）。
+      // 只影響 build 產出多一份 manifest.webmanifest 與一支 sw.js，桌面版行為不變。
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: ['icons/apple-touch-icon.png'],
+        manifest: {
+          name: '台股監控',
+          short_name: '台股監控',
+          description: '台股即時報價、訊號與分類監控',
+          start_url: '/',
+          display: 'standalone',
+          background_color: '#09090b',
+          theme_color: '#09090b',
+          icons: [
+            { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+            { src: '/icons/icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          // 只快取靜態資源；API／WebSocket 一律走網路，避免看到過期報價
+          globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+          navigateFallbackDenylist: [/^\/api\//, /^\/ws\//],
+        },
+      }),
+    ],
     server: {
       port: 5173,
       proxy: {

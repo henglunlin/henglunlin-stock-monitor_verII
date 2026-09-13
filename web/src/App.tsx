@@ -37,6 +37,8 @@ import { TargetEditor } from './components/TargetEditor'
 import { SettingsDialog } from './components/SettingsDialog'
 import { StockDetail } from './components/StockDetail'
 import { LoginDialog } from './components/LoginDialog'
+import { useResponsive } from './mobile/useResponsive'
+import { MobileApp } from './mobile/MobileApp'
 
 export default function App() {
   const {
@@ -45,6 +47,14 @@ export default function App() {
     setEvents, pushEvents,
   } = useStore()
   const socketRef = useRef<QuoteSocket | null>(null)
+  const { isMobile } = useResponsive()
+  /**
+   * 手機版省電模式（或分頁切到背景）時，快線報價先囤在這裡，
+   * 每 2 秒才一次套用進 store——省下畫面重繪次數，不影響資料完整性
+   * （後端本來就沒有補送機制，這裡只是延後套用，不會漏值，只會少中間過程）。
+   * 桌面版永遠不會走到緩衝分支，行為完全不變。
+   */
+  const quoteBufferRef = useRef<Record<string, number>>({})
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -101,7 +111,12 @@ export default function App() {
               pushEvents(msg.data)
               break
             case 'quotes':
-              applyQuotes(msg.data)
+              // 省電模式或分頁在背景時，先囤著，交給下面的節流計時器統一套用
+              if (useStore.getState().powerSave || document.hidden) {
+                Object.assign(quoteBufferRef.current, msg.data)
+              } else {
+                applyQuotes(msg.data)
+              }
               break
             case 'rows':
               setRows(msg.data)
@@ -127,6 +142,18 @@ export default function App() {
     return () => clearInterval(t)
   }, [refreshStatus, paused])
 
+  // 節流計時器：每 2 秒把囤積的報價一次套用進 store。全程運作，不受
+  // powerSave 開關與否影響——沒開省電模式時緩衝區本來就是空的，這裡只是白跑一次。
+  useEffect(() => {
+    const t = setInterval(() => {
+      const buf = quoteBufferRef.current
+      if (Object.keys(buf).length === 0) return
+      applyQuotes(buf)
+      quoteBufferRef.current = {}
+    }, 2000)
+    return () => clearInterval(t)
+  }, [applyQuotes])
+
   const handleRefresh = useCallback(async () => {
     try {
       const { rows } = await api.refreshRows()
@@ -147,6 +174,10 @@ export default function App() {
         </div>
       </div>
     )
+  }
+
+  if (isMobile) {
+    return <MobileApp />
   }
 
   return (

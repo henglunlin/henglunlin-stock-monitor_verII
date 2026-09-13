@@ -42,6 +42,9 @@ function writeLS(key: string, value: unknown): void {
 const LS_GROUPED = 'monitor.grouped.v1'
 const LS_COLLAPSED = 'monitor.collapsed.v1'
 const LS_TAIEX = 'monitor.taiex.v1'
+/** 手機版：已讀事件 id、省電模式，兩者都只是「單一裝置」的便利設定，不必也不該進後端 */
+const LS_READ_EVENTS = 'monitor.mobile.readEvents.v1'
+const LS_POWER_SAVE = 'monitor.mobile.powerSave.v1'
 
 /** tail 每檔最多留這麼多點，超過就丟掉最舊的（20 秒後 rows 會來把它清空） */
 const TAIL_MAX = 12
@@ -71,6 +74,9 @@ export type ModalKind =
   | { kind: 'targets' }
   /** 完整事件流面板 */
   | { kind: 'events' }
+
+/** 手機版底部導覽的五個分頁。跟 ModalKind 分開放：分頁是常駐的主畫面，不是浮動視窗。 */
+export type MobileTab = 'home' | 'watchlist' | 'signals' | 'groups' | 'settings'
 
 interface AppStore {
   rows: Row[]
@@ -103,6 +109,13 @@ interface AppStore {
   collapsed: Record<string, boolean>
   scrollTo: string | null
 
+  /** 手機版目前所在的底部導覽分頁。重新整理一律回到 'home'，故意不存 localStorage */
+  mobileTab: MobileTab
+  /** 手機版「訊號」頁已讀過的事件 id（存 localStorage，單一裝置的便利設定） */
+  readEventIds: Set<number>
+  /** 手機版省電模式：開啟後報價更新會被節流成每 1~3 秒套用一次 */
+  powerSave: boolean
+
   setRows: (rows: Row[]) => void
   applyQuotes: (data: Record<string, number>) => void
   setStatus: (s: Status) => void
@@ -125,6 +138,11 @@ interface AppStore {
   priceOf: (row: Row) => number
   /** 疊合後的盤中走勢（後端序列 + 本地線尾） */
   seriesOf: (row: Row) => number[]
+
+  setMobileTab: (tab: MobileTab) => void
+  /** 標記一批事件 id 為已讀（訊號頁「全部標為已讀」或點開單一事件時呼叫） */
+  markEventsRead: (ids: number[]) => void
+  setPowerSave: (v: boolean) => void
 }
 
 let lastTailAt = 0
@@ -147,6 +165,10 @@ export const useStore = create<AppStore>((set, get) => ({
   grouped: readLS<boolean>(LS_GROUPED, true),
   collapsed: readLS<Record<string, boolean>>(LS_COLLAPSED, {}),
   scrollTo: null,
+
+  mobileTab: 'home',
+  readEventIds: new Set<number>(readLS<number[]>(LS_READ_EVENTS, [])),
+  powerSave: readLS<boolean>(LS_POWER_SAVE, false),
 
   // 新的 rows 已經涵蓋到「後端算這包的當下」，本地 tail 的使命結束，清掉。
   setRows: (rows) => set({ rows, tail: {}, lastUpdate: Date.now() }),
@@ -247,6 +269,25 @@ export const useStore = create<AppStore>((set, get) => ({
     const base = row.intraday ?? []
     if (base.length === 0) return t ?? []
     return t && t.length ? base.concat(t) : base
+  },
+
+  setMobileTab: (mobileTab) => set({ mobileTab }),
+
+  markEventsRead: (ids) =>
+    set((state) => {
+      if (!ids.length) return {}
+      const next = new Set(state.readEventIds)
+      for (const id of ids) next.add(id)
+      // 已讀集合只需要涵蓋目前還在 events 陣列裡的 id，其餘的（早就被踢出 500 筆環形緩衝）沒有意義，順便讓 localStorage 不會無限長大
+      const stillTracked = new Set(state.events.map((e) => e.id))
+      const trimmed = [...next].filter((id) => stillTracked.has(id)).slice(0, MAX_EVENTS)
+      writeLS(LS_READ_EVENTS, trimmed)
+      return { readEventIds: new Set(trimmed) }
+    }),
+
+  setPowerSave: (powerSave) => {
+    writeLS(LS_POWER_SAVE, powerSave)
+    set({ powerSave })
   },
 }))
 
