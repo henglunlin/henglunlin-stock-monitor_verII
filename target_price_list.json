@@ -8,7 +8,7 @@
   },
   "2301.TW": {
     "target_price": 175.0,
-    "low_pct": 5.0,
+    "low_pct": 6.0,
     "high_pct": 5.0,
     "stop_loss": 159.0,
     "enabled": true
