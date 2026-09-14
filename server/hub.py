@@ -48,7 +48,7 @@ from core.indicators import compute_indicators
 from core.signals import GENERALIZED_THREE_METHOD_LABELS, run_stock_signals
 from core.state import TW_TZ, get_state
 from core.symbols import get_stock_name
-from core.tradingday import get_effective_trading_reference_date
+from core.tradingday import get_effective_trading_reference_date, is_fubon_realtime_time
 
 log = logging.getLogger(__name__)
 
@@ -477,6 +477,11 @@ class QuoteHub:
         """把夠重要的盤中事件推去 Telegram。低於門檻的只留在畫面上。"""
         state = get_state()
         if not state.settings.tg_push_enabled or not telegram.telegram_configured():
+            return
+        # 盤後（13:30 之後）或還沒開盤：這些事件本來就是用非即時的報價源湊出來的，
+        # 沒有意義還繼續推只是吵。畫面（_broadcast）不受這個設定影響，一樣照常顯示——
+        # 只有 Telegram 這條通路被關掉。
+        if state.settings.tg_event_market_hours_only and not is_fubon_realtime_time():
             return
         floor = int(state.settings.tg_event_min_priority)
         for e in events:
