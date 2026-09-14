@@ -86,6 +86,7 @@ class SettingsPatch(BaseModel):
     line_message_format: str | None = None
     line_max_signals_per_stock: int | None = None
     tg_event_min_priority: int | None = None
+    tg_event_market_hours_only: bool | None = None
     sync_groups_to_github: bool | None = None
     sync_target_price_to_github: bool | None = None
     rise_threshold: float | None = None
