@@ -6,9 +6,17 @@
  */
 import { useMemo, useState } from 'react'
 import { pctOf, useStore } from '../store'
+import type { SignalHit } from '../types'
+import { SignalBadges } from '../components/SignalBadges'
 import { computeGroupStats, tierOf } from './heat'
 
 type SortKey = 'order' | 'ratio' | 'hit'
+
+/** 展開後的個股清單一行空間有限，最多秀 2 個訊號（取優先等級最高的前 2 個） */
+function topSignals(signals: SignalHit[] | undefined, max = 2): SignalHit[] {
+  if (!signals || signals.length === 0) return []
+  return [...signals].sort((a, b) => a.priority - b.priority).slice(0, max)
+}
 
 export function GroupsPage({ onOpenStock }: { onOpenStock: (symbol: string) => void }) {
   const { rows, quotes, status } = useStore()
@@ -124,25 +132,36 @@ export function GroupsPage({ onOpenStock }: { onOpenStock: (symbol: string) => v
                   {members.length === 0 ? (
                     <div className="px-3 py-3 text-xs text-zinc-500">這個分類目前沒有算得出結果的股票。</div>
                   ) : (
-                    members.map((r) => (
-                      <button
-                        key={r.symbol}
-                        onClick={() => onOpenStock(r.symbol)}
-                        className="flex w-full items-center gap-2.5 border-b border-zinc-900/70 px-3 py-2 text-left last:border-b-0 active:bg-zinc-900/60"
-                      >
-                        <span className="font-mono text-xs text-zinc-500">{r.code}</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-zinc-100">{r.name}</span>
-                        <span className="shrink-0 font-mono text-xs tabular-nums text-zinc-300">{r.livePrice.toFixed(2)}</span>
-                        <span
-                          className={`shrink-0 font-mono text-xs tabular-nums ${
-                            r.livePct > 0 ? 'text-rose-400' : r.livePct < 0 ? 'text-emerald-400' : 'text-zinc-500'
-                          }`}
+                    members.map((r) => {
+                      const signals = topSignals(r.signals)
+                      return (
+                        <button
+                          key={r.symbol}
+                          onClick={() => onOpenStock(r.symbol)}
+                          className="flex w-full flex-col gap-1 border-b border-zinc-900/70 px-3 py-2 text-left last:border-b-0 active:bg-zinc-900/60"
                         >
-                          {r.livePct > 0 ? '+' : ''}
-                          {r.livePct.toFixed(2)}%
-                        </span>
-                      </button>
-                    ))
+                          <div className="flex items-center gap-2.5">
+                            <span className="font-mono text-xs text-zinc-500">{r.code}</span>
+                            <span className="min-w-0 flex-1 truncate text-xs text-zinc-100">{r.name}</span>
+                            <span className="shrink-0 font-mono text-xs tabular-nums text-zinc-300">{r.livePrice.toFixed(2)}</span>
+                            <span
+                              className={`shrink-0 font-mono text-xs tabular-nums ${
+                                r.livePct > 0 ? 'text-rose-400' : r.livePct < 0 ? 'text-emerald-400' : 'text-zinc-500'
+                              }`}
+                            >
+                              {r.livePct > 0 ? '+' : ''}
+                              {r.livePct.toFixed(2)}%
+                            </span>
+                          </div>
+                          {/* 沒有訊號的股票不畫這行，避免展開的清單被空白徽章撐長 */}
+                          {signals.length > 0 && (
+                            <div className="pl-2">
+                              <SignalBadges signals={signals} />
+                            </div>
+                          )}
+                        </button>
+                      )
+                    })
                   )}
                 </div>
               )}
