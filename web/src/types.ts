@@ -16,12 +16,6 @@ export interface SignalHit {
   /** 1 最重要，3 最次要 */
   priority: number
   detail: string
-  /**
-   * 選用：動態附加在訊號名稱後面的短字串（例如「下降趨勢線突破」的
-   * "(短期、中長期)"）——目前只有 K 線訊號圖（compute_historical_signals）
-   * 會回傳這欄，主表格的即時訊號沒有。
-   */
-  sub_label?: string | null
 }
 
 /** 目標價評估結果（後端算好的，前端不重算任何數字） */
@@ -193,6 +187,8 @@ export interface Settings {
   line_max_signals_per_stock: number
   /** 盤中事件要推 Telegram 的最低優先權。即時事件刻意不走 LINE */
   tg_event_min_priority: number
+  /** 即時事件只在盤中（09:00~13:30）推 Telegram；關掉就不分時段一律照推 */
+  tg_event_market_hours_only: boolean
   sync_groups_to_github: boolean
   sync_target_price_to_github: boolean
   /** 儀表板／表格的顯示門檻 */
@@ -201,12 +197,6 @@ export interface Settings {
   signal_rise_threshold: number
   /** 儀表板卡片轉紅的達標比例（%） */
   dashboard_hot_ratio: number
-  /** K 線訊號圖預設顯示天數（交易日） */
-  chart_history_days: number
-  /** K 線圖上完全不顯示的訊號名稱（設定頁勾選） */
-  chart_hidden_signal_labels: string[]
-  /** 這些訊號只在 K 線圖最新一天顯示，過去的日子不畫（避免洗版） */
-  chart_historical_suppress_labels: string[]
   rebound_pct: number
   rebound_cooldown_sec: number
   rebound_open_silence_min: number
@@ -297,57 +287,6 @@ export interface IntradaySeries {
   symbol: string
   source: string
   points: Point[]
-}
-
-/** /api/history/:symbol 的單一交易日資料（K 線訊號圖用） */
-export interface ChartBar {
-  date: string
-  open: number
-  high: number
-  low: number
-  close: number
-  volume: number
-  k: number | null
-  d: number | null
-  ma5: number | null
-  ma10: number | null
-  ma20: number | null
-  ma60: number | null
-  vol_ma5: number | null
-  vol_ma10: number | null
-  /** 當天觸發的訊號（已依優先等級排序，跟主表格同一套規則） */
-  signals: SignalHit[]
-}
-
-/** 一條趨勢線的兩個端點（core/trendlines.py 算出來、已經裁到圖表可見範圍） */
-export interface TrendSegment {
-  tier_label: string
-  from: { date: string; price: number }
-  to: { date: string; price: number }
-}
-
-/** /api/history/:symbol 回應裡的趨勢線：短期/中短期/中長期，缺的等級代表那個區間沒找到合法的線 */
-export interface TrendlineSet {
-  short?: TrendSegment
-  mid?: TrendSegment
-  long?: TrendSegment
-}
-
-/** /api/history/:symbol 的回應 */
-export interface ChartHistory {
-  symbol: string
-  name: string
-  days: number
-  bars: ChartBar[]
-  trendlines: { resistance: TrendlineSet; support: TrendlineSet }
-}
-
-/** /api/signals/catalog 的單一項目 */
-export interface SignalCatalogItem {
-  key: string
-  label: string
-  kind: 'buy' | 'sell'
-  priority: number
 }
 
 /** /api/debug/ws 的回應 */
