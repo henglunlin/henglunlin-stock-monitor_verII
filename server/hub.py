@@ -565,13 +565,33 @@ class QuoteHub:
         price, price_source = quotes.get_last_price(symbol, df, mgr)
         name = get_stock_name(symbol)
 
-        # 優先富邦官方 REST 今日開高低；缺的欄位退回查 db；再缺就用自己追蹤的
+        # 優先富邦官方 REST 今日開高低；缺的欄位退回查 db；再缺就試 yfinance；
+        # 最後才用自己追蹤的（state.intraday_high/low 只有富邦 tick 會更新，
+        # 用 yfinance 當即時源時永遠是 None——這正是「昨收/開盤/最高/最低」
+        # 欄位在 yfinance 模式下會被拉平成同一個價的根因，跟 K 線圖曾經的
+        # bug 是同一個洞，這裡補齊同一層 fallback）。
         ohlc = quotes.get_official_today_ohlc(mgr, symbol)
         if any(ohlc.get(k) is None for k in ("open", "high", "low")):
             db_ohlc = quotes.db.get_db_ohlc_for_date(symbol, price_ref_date.strftime("%Y-%m-%d"))
             for k in ("open", "high", "low"):
                 if ohlc.get(k) is None and db_ohlc.get(k) is not None:
                     ohlc[k] = db_ohlc[k]
+
+        # 今日累積成交量：富邦 REST/tick 拿不到就試 yfinance fast_info。
+        # ⚠️ 這裡以前完全沒有接任何即時成交量來源——prepare_signal_dataframe()
+        # 組今天這一根 K 棒時 Volume 一律寫死 0，不管富邦還是 yfinance 都一樣，
+        # 吃 Volume 的訊號模組（量縮、爆量突破…）在「今天」這一天永遠誤判。
+        volume_val = quotes.get_official_today_volume(mgr, symbol)
+
+        yf_ohlc = None
+        if any(ohlc.get(k) is None for k in ("open", "high", "low")) or volume_val is None:
+            yf_ohlc = quotes.get_yfinance_today_ohlc(symbol)
+        if yf_ohlc:
+            for k in ("open", "high", "low"):
+                if ohlc.get(k) is None and yf_ohlc.get(k) is not None:
+                    ohlc[k] = yf_ohlc[k]
+            if volume_val is None and yf_ohlc.get("volume") is not None:
+                volume_val = yf_ohlc["volume"]
 
         state = get_state()
         open_val = ohlc.get("open") if ohlc.get("open") is not None else price
@@ -587,6 +607,7 @@ class QuoteHub:
             symbol, name, df, open_val, high_val, low_val, price,
             rise_threshold=rise_threshold, price_ref_date=price_ref_date,
             target_entry=(target_table or {}).get(symbol),
+            volume_val=volume_val,
         )
 
         # ── 每列的迷你走勢圖有兩條資料，前端優先畫盤中那條 ──

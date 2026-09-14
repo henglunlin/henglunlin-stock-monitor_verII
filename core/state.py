@@ -138,6 +138,17 @@ class Settings:
     # 儀表板卡片轉紅的達標比例門檻（%）。下界 0 是語意（完全沒達標）不是參數，寫死。
     dashboard_hot_ratio: float = 60.0
 
+    # K 線訊號圖預設顯示天數（交易日）。使用者可在設定頁調整（例如拉長到 120 天）
+    chart_history_days: int = 90
+    # K 線圖上使用者勾掉、完全不想看到的訊號名稱。空清單 = 不隱藏任何訊號（預設全部顯示）。
+    chart_hidden_signal_labels: list = field(default_factory=list)
+    # 這幾個訊號雜訊多——「漲幅達標」幾乎天天可能觸發，「廣義上升/下降三法」本來就是
+    # 原版拿掉單獨推播的雜訊訊號（見 GENERALIZED_THREE_METHOD_LABELS）——歷史上每天都標
+    # 只會洗版，只有「最新一天」（通常是今天）才有意義，所以預設收斂成只在最新一天顯示。
+    chart_historical_suppress_labels: list = field(
+        default_factory=lambda: ["廣義上升三法", "廣義下降三法", "漲幅達標"]
+    )
+
     # ── 盤中事件偵測 ──
     # 📈 瞬間反彈：現價相對「今日最低」的漲幅
     rebound_pct: float = 3.0

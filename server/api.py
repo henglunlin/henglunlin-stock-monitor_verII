@@ -91,6 +91,9 @@ class SettingsPatch(BaseModel):
     rise_threshold: float | None = None
     signal_rise_threshold: float | None = None
     dashboard_hot_ratio: float | None = None
+    chart_history_days: int | None = None
+    chart_hidden_signal_labels: list[str] | None = None
+    chart_historical_suppress_labels: list[str] | None = None
     rebound_pct: float | None = None
     rebound_cooldown_sec: int | None = None
     rebound_open_silence_min: int | None = None
@@ -366,6 +369,75 @@ async def read_symbol_intraday(symbol: str):
     from core.symbols import normalize_symbol_quick
     sym = normalize_symbol_quick(symbol) or symbol
     return quotes.get_symbol_intraday(get_state().fubon_manager, sym)
+
+
+@router.get("/history/{symbol}", dependencies=auth)
+async def read_symbol_history(symbol: str, days: int | None = None):
+    """
+    單檔的日K + 訊號標註 + 趨勢線（K 線訊號圖用）。
+
+    跟 /api/debug/signals/{symbol} 用的是同一套 signal_module 訊號引擎，差別是
+    這支把過去 N 個交易日**逐日**重新判定一次（見 core/signals.py 的
+    compute_historical_signals），這樣圖上每一天標的訊號都是「當天收盤後真的會
+    顯示的那個訊號」，不是只有最新一天的結果；最新一根 K 棒則會嘗試併入「今天」的
+    即時開高低收（跟即時盤中掃描同一套邏輯），讓圖上最新一天不會是昨晚收盤的舊資料。
+
+    days 不傳時用使用者在設定頁調整過的 chart_history_days（預設 90）；
+    有傳就以這次請求為準，但夾在 [30, 250] 之間——太短沒有意義（很多指標要
+    20~60 天才穩定），太長則單次計算成本會明顯升高（20 個訊號模組 × N 天）。
+
+    顯示哪些訊號、哪些訊號只在最新一天顯示，吃使用者在設定頁的
+    chart_hidden_signal_labels / chart_historical_suppress_labels。
+    """
+    from core.signals import get_chart_history
+    from core.symbols import get_stock_name, normalize_symbol_quick
+    from server.hub import json_safe
+
+    sym = normalize_symbol_quick(symbol) or symbol
+    state = get_state()
+    n_days = days if days is not None else state.settings.chart_history_days
+    n_days = max(30, min(250, n_days))
+    name = get_stock_name(sym)
+
+    try:
+        result = get_chart_history(
+            sym, name, n_days, state.settings.signal_rise_threshold,
+            hidden_labels=tuple(state.settings.chart_hidden_signal_labels),
+            historical_suppress_labels=tuple(state.settings.chart_historical_suppress_labels),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"取得 {sym} 歷史資料失敗：{e}")
+
+    return json_safe({
+        "symbol": sym,
+        "name": name,
+        "days": n_days,
+        "bars": result["bars"],
+        "trendlines": result["trendlines"],
+    })
+
+
+@router.get("/signals/catalog", dependencies=auth)
+async def signal_catalog():
+    """
+    全部已註冊的訊號清單（key/label/kind/priority），給前端「K 線圖要顯示哪些訊號」
+    的勾選清單用。跟主表格「買賣訊號」欄位讀同一份 SIGNAL_REGISTRY / SIGNAL_PRIORITY，
+    不會有兩邊清單對不上的問題。
+    """
+    from core.signals import SIGNAL_PRIORITY, SIGNAL_PRIORITY_DEFAULT
+    from signal_module.base import SIGNAL_REGISTRY
+
+    items = [
+        {
+            "key": key,
+            "label": cfg["label"],
+            "kind": cfg.get("kind", "buy"),
+            "priority": SIGNAL_PRIORITY.get(cfg["label"], SIGNAL_PRIORITY_DEFAULT),
+        }
+        for key, cfg in SIGNAL_REGISTRY.items()
+    ]
+    items.sort(key=lambda x: (x["priority"], x["label"]))
+    return {"signals": items}
 
 
 # =============================================================================

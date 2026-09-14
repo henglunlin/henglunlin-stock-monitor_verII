@@ -56,9 +56,10 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "download_stock_data", "normalize_ohlc", "parse_price_value",
-    "get_yfinance_fast_info_price", "get_yahoo_tw_quote_price",
+    "get_yfinance_fast_info_price", "get_yfinance_today_ohlc", "get_yahoo_tw_quote_price",
     "get_yfinance_latest_daily_close", "after_1330_price_logic",
     "get_last_price", "download_history_yfinance",
+    "get_official_today_ohlc", "get_official_today_volume",
 ]
 
 
@@ -194,7 +195,19 @@ def parse_price_value(value):
 # 即時價格來源（多層 fallback）
 # =============================================================================
 def get_yfinance_fast_info_price(symbol: str):
-    """回傳 (price, 實際成功的代碼)。刻意不快取——這是「即時」價格。"""
+    """
+    回傳 (price, 實際成功的代碼)。刻意不快取——這是「即時」價格。
+
+    ⚠️ 這裡曾經有一個安靜的 bug：yfinance 的 FastInfo「假裝是個 dict」，但它的
+    `.get(key)` 只認得 camelCase 鍵名（例如 "lastPrice"）——不是 `__getitem__`
+    （`fast_info["last_price"]`）那樣兩種寫法都認得，這是 yfinance 自己套件內部
+    `keys()` 只回傳 camelCase 清單造成的（真的去源碼 `FastInfo.keys()` 印出來
+    才發現，兩種存取方式的「合法鍵名清單」不一樣，官方文件沒特別強調）。
+    原本這裡用 `.get("last_price", None)`（底線寫法）永遠拿到 None、永遠失敗，
+    導致這一層 fallback 形同虛設，`after_1330_price_logic()` 永遠直接跳到下一層
+    （Yahoo 奇摩股市），使用者會看到報價來源一直顯示「Yahoo TW」而不是這一層
+    本來該顯示的「yfinance fast_info」。改成 camelCase 鍵名就能正確吃到值。
+    """
     primary = str(symbol).strip().upper()
     candidates = [primary] + [s for s in build_yfinance_candidates(symbol) if s != primary]
     seen = set()
@@ -205,13 +218,71 @@ def get_yfinance_fast_info_price(symbol: str):
         seen.add(yf_symbol)
         try:
             ticker = yf.Ticker(yf_symbol)
-            price = ticker.fast_info.get("last_price", None)
+            price = ticker.fast_info.get("lastPrice", None)
             if price is not None and pd.notna(price):
                 return float(price), yf_symbol
         except Exception as e:
             last_error = f"{yf_symbol}: {e}"
             continue
     raise ValueError(f"yfinance fast_info 無法取得 {symbol} 價格。最後錯誤：{last_error}")
+
+
+def get_yfinance_today_ohlc(symbol: str) -> dict:
+    """
+    跟 get_official_today_ohlc() 同樣的用途（今天的開高低），但這支走 yfinance
+    fast_info——給沒有富邦連線時（realtime_source == "yfinance"，或富邦暫時斷線
+    退避中）的 K 線圖用。
+
+    ── 為什麼需要這支：K 線訊號圖曾經有的 bug ──
+    get_official_today_ohlc() 只在富邦 SDK 連線可用時才有值，AppState 的
+    intraday_high/low 追蹤（get_intraday_high/low）也只在富邦 tick 回呼
+    （server/hub.py 的 _on_tick）裡才會更新。這代表用 yfinance 當即時來源時，
+    這兩層 fallback**永遠**是 None，K 線圖最後只能整根退回現價，開高低收擠成
+    同一個數字——不是只有真的一字漲停鎖死那天才會看到這個現象。這支直接問
+    yfinance 今天的官方開高低，補上這個空缺，不依賴我們自己的 tick 追蹤。
+
+    刻意不快取——盤中每次打開圖表都想看當下最新的官方數字；量本來就低
+    （使用者主動點開才會呼叫），不像 get_yfinance_fast_info_price() 那樣
+    在全市場的即時報價迴圈裡被高頻呼叫。
+
+    ⚠️ 鍵名務必用 camelCase（"open"／"dayHigh"／"dayLow"／"lastVolume"），不能用
+    底線寫法——yfinance 的 FastInfo.get() 只認得 camelCase（見
+    get_yfinance_fast_info_price() 上面那段註解，這裡踩的是同一個 yfinance
+    套件本身的坑，再犯一次等於白補）。
+
+    ⚠️ 順便把「今天累積成交量」（"volume" 鍵）也一起撈出來——fast_info 一次
+    fetch 就能拿到 lastVolume，跟開高低分開各打一次網路請求純屬浪費。這是
+    K 線圖／主表格「今日成交量」在 yfinance 模式下永遠是 0 這個 bug 的其中
+    一層 fallback（另一層是富邦，見 get_official_today_volume()）。
+
+    任何情況失敗都回傳全 None，讓呼叫端安全地往下一層 fallback（現價／0）。
+    """
+    empty = {"open": None, "high": None, "low": None, "volume": None}
+    primary = str(symbol).strip().upper()
+    candidates = [primary] + [s for s in build_yfinance_candidates(symbol) if s != primary]
+    seen = set()
+    for yf_symbol in candidates:
+        if not yf_symbol or yf_symbol in seen:
+            continue
+        seen.add(yf_symbol)
+        try:
+            info = yf.Ticker(yf_symbol).fast_info
+
+            def _to_float(v):
+                try:
+                    return float(v) if v is not None and pd.notna(v) else None
+                except Exception:
+                    return None
+
+            open_v = _to_float(info.get("open"))
+            high_v = _to_float(info.get("dayHigh"))
+            low_v = _to_float(info.get("dayLow"))
+            vol_v = _to_float(info.get("lastVolume"))
+            if open_v is not None or high_v is not None or low_v is not None or vol_v is not None:
+                return {"open": open_v, "high": high_v, "low": low_v, "volume": vol_v}
+        except Exception:
+            continue
+    return empty
 
 
 @ttl_cache(ttl=30)
@@ -439,12 +510,25 @@ def fetch_fubon_intraday_ohlc(_sdk, code: str) -> dict:
     """
     reststock = _sdk.marketdata.rest_client.stock
     quote = reststock.intraday.quote(symbol=code)
+    # 成交量：官方文件把它包在巢狀的 quote["total"]["tradeVolume"]，但版本間
+    # 可能有落差，所以也順手撈幾個常見的扁平候選鍵名保底——跟 core/fubon.py
+    # 的 _extract_cumulative_volume() 同一個思路：多猜幾個，抓到就好，抓不到
+    # 就是 None，讓呼叫端安全地往下一層 fallback。
+    total = quote.get("total") if isinstance(quote.get("total"), dict) else {}
+    trade_volume = total.get("tradeVolume")
+    if trade_volume is None:
+        trade_volume = total.get("volume")
+    if trade_volume is None:
+        trade_volume = quote.get("tradeVolume")
+    if trade_volume is None:
+        trade_volume = quote.get("volume")
     return {
         "previousClose": quote.get("previousClose"),
         "openPrice": quote.get("openPrice"),
         "highPrice": quote.get("highPrice"),
         "lowPrice": quote.get("lowPrice"),
         "lastPrice": quote.get("lastPrice"),
+        "tradeVolume": trade_volume,
     }
 
 
@@ -478,6 +562,51 @@ def get_official_today_ohlc(manager, symbol: str) -> dict:
         }
     except Exception:
         return empty
+
+
+def get_official_today_volume(manager, symbol: str) -> float | None:
+    """
+    「今天累積成交量」，跟 get_official_today_ohlc() 同一個用途、同一顆快取
+    （fetch_fubon_intraday_ohlc 是 @ttl_cache，這裡不會多打一次 REST）。
+
+    ── 這是「K 線圖／主表格今日成交量永遠是 0」這個 bug 的富邦那一側 ──
+    以前 core/signals.py 的 prepare_signal_dataframe() 組今天這一根 K 棒時，
+    成交量欄位不管三七二十一都寫死 0，從來沒有接過任何即時成交量的資料源
+    ——不是只有 yfinance 模式才這樣，富邦模式一樣是 0。這支加上去，讓呼叫端
+    能把真正的今日累積量併進去。
+
+    容錯順序：
+      1. 富邦 REST（intraday quote 的 tradeVolume，官方文件是巢狀的
+         total.tradeVolume，已經在 fetch_fubon_intraday_ohlc 裡拆出來了）
+      2. 富邦 WebSocket tick 流累積下來的量（TickStore.last_cum）——REST
+         欄位版本對不上、但 WS 正在收這檔 tick 時的備援
+
+    兩層都拿不到回 None，讓呼叫端安全地往下一層 fallback（yfinance fast_info、
+    或乾脆放棄顯示成交量）。
+    """
+    try:
+        sdk = getattr(manager, "sdk", None)
+        if sdk is None:
+            return None
+        from core.symbols import symbol_to_code
+        code = symbol_to_code(symbol)
+        try:
+            ohlc = fetch_fubon_intraday_ohlc(sdk, code)
+            v = ohlc.get("tradeVolume")
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+        try:
+            from core.ticks import get_tick_store
+            v = get_tick_store().get_cum_volume(code)
+            if v is not None:
+                return v
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return None
 
 
 # =============================================================================

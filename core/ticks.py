@@ -152,6 +152,20 @@ class TickStore:
             self.total_ticks += 1
 
     # ------------------------------------------------------------------
+    def get_cum_volume(self, code: str) -> float | None:
+        """
+        目前追蹤到的「今日累積成交量」（富邦 tick 流裡最新一筆的累積量）。
+
+        用途：K 線圖／主表格的今日成交量，在富邦 REST 那層抓不到量的欄位時
+        當備援——只要富邦 WebSocket 有在收這檔的 tick，這裡就有值，不受
+        `aggregate()` 的 120 秒視窗限制（`last_cum` 是獨立欄位，不會被
+        `drop_before()` 裁掉）。查不到（今天還沒收過任何 tick）回 None。
+        """
+        with self._lock:
+            s = self._s.get(code)
+            return float(s.last_cum) if s is not None and s.last_cum is not None else None
+
+    # ------------------------------------------------------------------
     def aggregate(self, code: str, now_ts: float, bucket_sec: float,
                   track_sec: float, ago_list: tuple) -> dict | None:
         """
