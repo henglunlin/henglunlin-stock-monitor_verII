@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { useStore } from '../store'
-import type { DetectorDebug, FubonDebug, LineDebug, Settings, SignalCatalogItem, WsDebug } from '../types'
+import type { DetectorDebug, FubonDebug, LineDebug, Settings, WsDebug } from '../types'
 import { Modal } from './Modal'
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
@@ -363,7 +363,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [dbgOpen, setDbgOpen] = useState(false)
   const [det, setDet] = useState<DetectorDebug | null>(null)
   const [detOpen, setDetOpen] = useState(false)
-  const [signalCatalog, setSignalCatalog] = useState<SignalCatalogItem[] | null>(null)
   const s = status?.settings
   const fubon = status?.fubon
 
@@ -374,24 +373,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       if (cur) setStatus({ ...cur, settings: next })
     },
     [setStatus],
-  )
-
-  // K 線圖訊號篩選清單：跟主表格「買賣訊號」欄位讀同一份 SIGNAL_REGISTRY，
-  // 不會有「設定頁看得到的訊號」跟「圖上實際會出現的訊號」兜不起來的問題。
-  useEffect(() => {
-    if (!open) return
-    api.signalCatalog().then((d) => setSignalCatalog(d.signals)).catch(() => setSignalCatalog(null))
-  }, [open])
-
-  const toggleHiddenSignal = useCallback(
-    (label: string) => {
-      const current = useStore.getState().status?.settings.chart_hidden_signal_labels ?? []
-      const hidden = new Set(current)
-      if (hidden.has(label)) hidden.delete(label)
-      else hidden.add(label)
-      patch({ chart_hidden_signal_labels: Array.from(hidden) })
-    },
-    [patch],
   )
 
   useEffect(() => {
@@ -500,51 +481,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               />
               <span className="block text-[11px] text-zinc-600">達標比例超過就把卡片轉紅</span>
             </label>
-            <label className="text-xs text-zinc-400">
-              K 線圖顯示天數
-              <input
-                type="number" step={10} min={30} max={250}
-                value={s.chart_history_days}
-                onChange={(e) => patch({ chart_history_days: Number(e.target.value) })}
-                className="ml-2 w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-right font-mono tabular-nums text-zinc-100"
-              />
-              <span className="block text-[11px] text-zinc-600">個股詳情「K 線」分頁預設回看幾個交易日</span>
-            </label>
           </div>
-        </Section>
-
-        <Section
-          title="📊 K 線圖訊號篩選"
-          hint="不勾的訊號不會標在 K 線圖上——只影響「K 線訊號」分頁的圖，主表格「買賣訊號」欄位跟 Telegram/LINE 推播都不受影響。"
-        >
-          {signalCatalog === null ? (
-            <p className="text-xs text-zinc-600">載入訊號清單中…</p>
-          ) : (
-            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-              {signalCatalog.map((sig) => {
-                const hidden = s.chart_hidden_signal_labels.includes(sig.label)
-                return (
-                  <label key={sig.key} className="flex cursor-pointer items-center gap-1.5 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={!hidden}
-                      onChange={() => toggleHiddenSignal(sig.label)}
-                      className="accent-emerald-500"
-                    />
-                    <span className={hidden ? 'text-zinc-600' : sig.kind === 'buy' ? 'text-rose-400' : 'text-emerald-400'}>
-                      {sig.label}
-                    </span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
-          {s.chart_historical_suppress_labels.length > 0 && (
-            <p className="mt-2.5 text-[11px] leading-relaxed text-zinc-600">
-              另外，{s.chart_historical_suppress_labels.join('、')}
-              　這幾個訊號雜訊較多，預設只在圖上最新一天顯示，過去的日子不畫。
-            </p>
-          )}
         </Section>
 
         <Section
@@ -771,6 +708,12 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 對應 core/events.py 的 PRIORITY。跑馬燈不受這個值影響。
               </span>
             </label>
+            <Check
+              on={s.tg_event_market_hours_only}
+              onChange={(v) => patch({ tg_event_market_hours_only: v })}
+              label="只在盤中時段（09:00~13:30）推播"
+              hint="關掉之後，13:30 收盤後（或還沒開盤）偵測到的事件也會照推——畫面顯示不受這個開關影響，一律照常顯示"
+            />
           </div>
 
           <div className="mt-4 border-t border-zinc-800 pt-3">
