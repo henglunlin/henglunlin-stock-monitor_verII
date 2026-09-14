@@ -47,7 +47,7 @@ export default function App() {
     setEvents, pushEvents,
   } = useStore()
   const socketRef = useRef<QuoteSocket | null>(null)
-  const { isMobile } = useResponsive()
+  const { isMobile, isNarrowViewport, forceDesktop, setForceDesktop } = useResponsive()
   /**
    * 手機版省電模式（或分頁切到背景）時，快線報價先囤在這裡，
    * 每 2 秒才一次套用進 store——省下畫面重繪次數，不影響資料完整性
@@ -214,6 +214,22 @@ export default function App() {
       <TargetEditor open={modal.kind === 'targets'} onClose={closeModal} />
       <SettingsDialog open={modal.kind === 'settings'} onClose={closeModal} />
       <LoginDialog open={modal.kind === 'login'} onClose={closeModal} onSuccess={refreshStatus} />
+
+      {/*
+        手機上「切換桌面版」是手機設定頁裡的一顆開關——但切過去之後就整個
+        變成桌面版畫面，手機設定頁也跟著消失，變成沒有路可以切回去（除非去清
+        localStorage）。這裡補一個只在「視窗真的很窄 + 目前是被強制切成桌面版」
+        時才出現的浮動按鈕，讓人能切回手機版。一般桌面使用者（視窗夠寬）永遠
+        看不到這顆按鈕。
+      */}
+      {isNarrowViewport && forceDesktop && (
+        <button
+          onClick={() => setForceDesktop(false)}
+          className="fixed bottom-4 right-4 z-40 rounded-full border border-zinc-700 bg-zinc-900/95 px-3 py-2 text-xs font-medium text-zinc-100 shadow-lg backdrop-blur hover:bg-zinc-800"
+        >
+          📱 切回手機版
+        </button>
+      )}
     </div>
   )
 }
