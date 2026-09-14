@@ -122,6 +122,11 @@ class Settings:
     # ⚠️ 即時事件刻意只走 Telegram，不走 LINE：1 秒偵測線配 193 檔，
     #    LINE 的月額度撐不住，而且即時訊號本來就該去最吵的那條管道。
     tg_event_min_priority: int = 2
+    # 即時事件只在盤中時段（09:00~13:30，跟 core.tradingday.is_fubon_realtime_time()
+    # 同一條界線）才推 Telegram；13:30 收盤後（或還沒開盤）一律不推。
+    # 預設開啟：盤後 price_source 會自動切去 yfinance/Yahoo TW 這些非即時來源，
+    # 用它們湊出來的「即時事件」本來就沒有意義，只會在下班後繼續吵。
+    tg_event_market_hours_only: bool = True
     # 分組存檔時是否同步推回 GitHub
     sync_groups_to_github: bool = True
     # 目標價設定存檔時是否同步推回 GitHub（跟分組同一個理由：Render 免費方案
