@@ -1,0 +1,33 @@
+{
+  "pin_hash": null,
+  "telegram": [
+    {
+      "id": "9a2b55da",
+      "label": "預設（.env）",
+      "chat_id": "8299437524",
+      "intraday": true,
+      "digest": true,
+      "enabled": true
+    }
+  ],
+  "line": [
+    {
+      "id": "7254aa88",
+      "label": "預設（.env）",
+      "target_id": "Ub59913d2911f9c090f95f24e1c613264",
+      "kind": "user",
+      "intraday": false,
+      "digest": true,
+      "enabled": false
+    },
+    {
+      "id": "63ae0459",
+      "label": "JC&00",
+      "target_id": "Rb52eb70a167ae27b3e5368ac2e0e6bb6",
+      "kind": "group",
+      "intraday": false,
+      "digest": true,
+      "enabled": true
+    }
+  ]
+}
