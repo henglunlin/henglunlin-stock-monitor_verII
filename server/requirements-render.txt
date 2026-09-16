@@ -1,0 +1,11 @@
+# Render 部署專用。Build Command 用這一份：
+#
+#     pip install -r server/requirements-render.txt
+#
+# 內容 = 跨平台依賴 + Linux 版富邦 SDK。
+
+-r requirements.txt
+
+# 富邦 Neo SDK（manylinux x86_64，與 Render 的執行環境相容）
+# 路徑相對於 repo 根目錄，因為 pip 是在根目錄執行的。
+./fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
