@@ -522,6 +522,18 @@ def fetch_fubon_intraday_ohlc(_sdk, code: str) -> dict:
         trade_volume = quote.get("tradeVolume")
     if trade_volume is None:
         trade_volume = quote.get("volume")
+
+    # ⚠️ 單位轉換：富邦這支 REST 回傳的 tradeVolume 是「張」，不是「股」——
+    # 跟資料庫歷史 Volume 欄位（股數，來自 yfinance／TWSE）不一致。
+    # 2026-09-17 用 scripts/probe_volume_unit.py 實測 4956：
+    #   富邦 total.tradeVolume = 8458　vs　yfinance fast_info.lastVolume = 8,490,944
+    #   （8458 * 1000 ≈ 8,490,944，量級對得上，兩者只差在 yfinance 有延遲）
+    # 這裡統一換算成股，讓呼叫端（core/signals.py 的 prepare_signal_dataframe）
+    # 拿去跟歷史股數欄位比大小、合併進 Volume 時單位才會一致；否則今天這一根
+    # K 棒的量會被錯當成股數，變成正確值的 1/1000（K 線圖成交量顯示異常小的成因）。
+    if trade_volume is not None:
+        trade_volume = float(trade_volume) * 1000
+
     return {
         "previousClose": quote.get("previousClose"),
         "openPrice": quote.get("openPrice"),
